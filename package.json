@@ -1,0 +1,15 @@
+{
+  "name": "chat-efimero",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Chat grupal pequeño con mensajes temporales",
+  "scripts": {
+    "start": "node server.js",
+    "start:railway": "node railway/relay.js",
+    "tunnel": "node railway/client.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bruma — chat efímero</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel" id="chat-panel">
+        <header class="room-header">
+          <div>
+            <button id="avatar-picker" class="avatar-picker brand-mark" type="button" title="Abrir perfil" aria-label="Abrir perfil">Bm</button>
+            <span class="status-dot"></span><span>En línea</span>
+            <h2 id="room-title">Sala del grupo</h2>
+          </div>
+          <button id="mobile-nav-toggle" class="mobile-panel-toggle" type="button" aria-label="Abrir conversaciones" aria-controls="friends-strip" aria-expanded="false">☰</button>
+          <nav id="friends-strip" class="friends-strip" aria-label="Conversaciones">
+            <div class="mobile-drawer-heading"><strong>Conversaciones</strong><button id="mobile-nav-close" type="button" aria-label="Cerrar conversaciones">×</button></div>
+            <button id="group-room" class="friend-avatar active" type="button" title="Sala del grupo" aria-label="Sala del grupo">G</button>
+            <div id="friend-list" class="friend-list"></div>
+            <button id="add-friend" class="add-friend" type="button" title="Agregar amigo" aria-label="Agregar amigo">+</button>
+          </nav>
+          <button id="mobile-info-toggle" class="mobile-panel-toggle" type="button" aria-label="Abrir información" aria-controls="info-panel" aria-expanded="false">ⓘ</button>
+          <div class="header-actions">
+            <button id="account-toggle" class="gif-toggle" type="button">Cuenta</button>
+            <button id="toggle-gifs" class="gif-toggle" type="button" aria-expanded="true">GIFs <span>⌄</span></button>
+            <div class="timer-card"><span>Próxima limpieza</span><strong id="next-cleanup">calculando...</strong></div>
+          </div>
+        </header>
+
+        <div id="profile-menu" class="profile-menu" hidden>
+          <div class="profile-menu-heading"><strong>Tu perfil</strong><button id="close-profile" type="button" aria-label="Cerrar menú">×</button></div>
+          <div id="profile-avatar-preview" class="profile-avatar profile-preview profile-fallback" aria-hidden="true">?</div>
+          <button id="change-avatar" class="profile-action" type="button">Cambiar foto</button>
+          <label for="author">Nombre visible</label>
+          <input id="author" maxlength="30" placeholder="Tu nombre" autocomplete="nickname" required />
+          <label for="profile-username">Nombre de usuario</label>
+          <input id="profile-username" maxlength="21" placeholder="@usuario" autocomplete="username" required />
+          <button id="save-profile" class="save-profile" type="button">Guardar cambios</button>
+        </div>
+
+        <div id="friends-menu" class="friends-menu" hidden>
+          <div class="profile-menu-heading"><strong>Amigos</strong><button id="close-friends" type="button" aria-label="Cerrar amigos">×</button></div>
+          <label for="friend-username">Enviar solicitud a</label>
+          <div class="friend-request-form">
+            <input id="friend-username" maxlength="21" placeholder="@usuario" autocomplete="off" />
+            <button id="send-friend-request" type="button">Enviar</button>
+          </div>
+          <p id="friends-status" class="account-status"></p>
+          <div class="friend-section"><strong>Solicitudes recibidas</strong><div id="incoming-requests"></div></div>
+          <div class="friend-section"><strong>Solicitudes enviadas</strong><div id="outgoing-requests"></div></div>
+        </div>
+
+        <div id="account-dialog" class="delete-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="account-title">
+          <div class="delete-dialog-card account-card">
+            <div class="profile-menu-heading"><strong id="account-title">Cuenta opcional</strong><button id="close-account" type="button" aria-label="Cerrar cuenta">×</button></div>
+            <p>Regístrate para guardar una cuenta en este servidor. El chat sigue funcionando sin cuenta.</p>
+            <label class="edit-label" for="account-email">Correo</label>
+            <input id="account-email" class="account-input" type="email" autocomplete="email" placeholder="tu@correo.com">
+            <label class="edit-label" for="account-username">Nombre de usuario</label>
+            <input id="account-username" class="account-input" maxlength="21" autocomplete="username" placeholder="@usuario">
+            <label class="edit-label" for="account-password">Contraseña</label>
+            <input id="account-password" class="account-input" type="password" minlength="8" autocomplete="new-password" placeholder="Mínimo 8 caracteres">
+            <div class="delete-dialog-actions account-actions">
+              <button id="login-account" type="button">Iniciar sesión</button>
+              <button id="register-account" class="save-profile" type="button">Crear cuenta</button>
+            </div>
+            <button id="logout-account" class="quiet-delete-button" type="button" hidden>Cerrar sesión</button>
+            <p id="account-status" class="account-status"></p>
+          </div>
+        </div>
+
+        <section id="gif-panel" class="gif-panel" aria-label="Buscador de GIFs">
+          <div class="gif-heading"><strong>GIFs</strong><span>Powered by GIPHY</span></div>
+          <form id="gif-form" class="gif-search">
+            <input id="gif-query" maxlength="50" placeholder="Busca una reacción..." autocomplete="off" />
+            <button type="submit">Buscar</button>
+          </form>
+          <p id="gif-status" class="gif-status"></p>
+          <div id="gif-results" class="gif-results"></div>
+        </section>
+
+        <div id="messages" class="messages" aria-live="polite"></div>
+
+        <div id="reply-composer" class="reply-composer" hidden>
+          <div><strong>Respondiendo a <span id="reply-author"></span></strong><p id="reply-text"></p></div>
+          <button id="cancel-reply" type="button" aria-label="Cancelar respuesta">×</button>
+        </div>
+
+        <div id="delete-dialog" class="delete-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="delete-title">
+          <div class="delete-dialog-card">
+            <h3 id="delete-title">¿Borrar mensaje?</h3>
+            <p>Esta acción no se puede deshacer.</p>
+            <div class="delete-dialog-actions">
+              <button id="cancel-delete" type="button">Cancelar</button>
+              <button id="confirm-delete" class="danger-button" type="button">Borrar</button>
+            </div>
+            <button id="delete-without-confirmation" class="quiet-delete-button" type="button">Borrar sin volver a preguntar</button>
+          </div>
+        </div>
+
+        <div id="edit-dialog" class="delete-dialog" hidden role="dialog" aria-modal="true" aria-labelledby="edit-title">
+          <div class="delete-dialog-card">
+            <h3 id="edit-title">Editar mensaje</h3>
+            <label class="edit-label" for="edit-input">Contenido</label>
+            <textarea id="edit-input" class="edit-input" maxlength="500" rows="4"></textarea>
+            <div class="delete-dialog-actions">
+              <button id="cancel-edit" type="button">Cancelar</button>
+              <button id="save-edit" class="save-profile" type="button">Guardar cambios</button>
+            </div>
+          </div>
+        </div>
+
+        <form id="message-form" class="composer">
+          <input id="avatar" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp" />
+          <label class="sr-only" for="text">Mensaje</label>
+          <input id="text" maxlength="500" placeholder="Escribe algo..." autocomplete="off" />
+          <label class="image-picker" for="image" title="Adjuntar imagen">+<span>Imagen</span></label>
+          <input id="image" class="sr-only" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple />
+          <button id="record" class="record-button" type="button" aria-label="Grabar mensaje de voz">● Voz</button>
+          <button type="submit" aria-label="Enviar mensaje"><span class="send-label">Enviar</span> <span aria-hidden="true">↗</span></button>
+        </form>
+        <div id="image-queue" class="image-queue" aria-live="polite"></div>
+        <p id="image-status" class="image-status" aria-live="polite"></p>
+        <p class="notice">Los mensajes se eliminan automáticamente después de 12 horas y durante la limpieza diaria de las 00:00.</p>
+      </section>
+
+      <aside class="side-panel" id="info-panel" aria-label="Información de la sala">
+        <div class="mobile-drawer-heading"><strong>Información</strong><button id="mobile-info-close" type="button" aria-label="Cerrar información">×</button></div>
+        <div class="side-brand">Bruma</div>
+        <div class="side-divider"></div>
+        <p class="side-label">SALA ACTUAL</p>
+        <h3 id="side-room-title">Sala del grupo</h3>
+        <p class="side-copy" id="side-room-description">Un espacio pequeño para hablar, compartir y dejar que los mensajes desaparezcan.</p>
+        <div class="side-status"><span class="status-dot"></span> Servicio activo</div>
+        <div class="side-divider"></div>
+        <p class="side-label">PRIVACIDAD</p>
+        <p class="side-copy" id="side-privacy-copy">Los mensajes se guardan temporalmente y se eliminan durante la limpieza diaria.</p>
+      </aside>
+      <button id="mobile-drawer-backdrop" class="mobile-drawer-backdrop" type="button" aria-label="Cerrar panel" hidden></button>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

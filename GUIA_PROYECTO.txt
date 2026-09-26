@@ -1,0 +1,334 @@
+BRUMA — GUÍA DEL PROYECTO
+==========================
+
+Esta aplicación es un chat web temporal para grupos pequeños. Permite usar el
+chat sin crear una cuenta y también permite crear cuentas opcionales para
+guardar el nombre visible, el nombre de usuario y la foto de perfil.
+
+
+1. ESTRUCTURA DEL PROYECTO
+--------------------------
+
+server.js
+  Servidor HTTP de Node.js. Sirve la página, expone la API, valida los datos,
+  guarda mensajes y administra cuentas, amistades y chats privados.
+
+public/index.html
+  Estructura HTML de la interfaz: encabezado, sala grupal, panel de GIFs,
+  mensajes, formularios, diálogos y barra de amigos.
+
+public/app.js
+  Lógica del navegador. Envía y recibe mensajes, actualiza la interfaz,
+  administra la sesión, perfiles, GIFs, imágenes, audio, respuestas y amigos.
+
+public/style.css
+  Estilos visuales: colores, tamaños, distribución, sombras, bordes,
+  avatares, panel lateral y diseño responsive.
+
+storage/messages.json
+  Mensajes de la sala grupal mientras todavía no han caducado.
+
+storage/accounts.json
+  Cuentas registradas. Guarda correos, nombres de usuario, nombres visibles,
+  fotos de perfil y credenciales protegidas mediante hash.
+
+storage/friends.json
+  Solicitudes de amistad y amistades aceptadas.
+
+storage/private-messages.json
+  Mensajes de chats privados. Se eliminan automáticamente después de 24 horas.
+
+
+2. INSTALAR Y EJECUTAR
+----------------------
+
+Requisitos:
+  - Node.js
+  - npm
+
+Desde la carpeta del proyecto:
+
+  npm start
+
+Después abre en el navegador:
+
+  http://localhost:3000
+
+Si el puerto 3000 está ocupado, puedes usar otro:
+
+  PORT=4000 npm start
+
+En Windows PowerShell:
+
+  $env:PORT=4000; npm start
+
+Para detener el servidor, pulsa Ctrl+C en la terminal.
+
+
+3. CHAT GRUPAL
+--------------
+
+El chat grupal está disponible para usuarios con cuenta y visitantes.
+
+Los visitantes reciben un nombre genérico con este formato:
+
+  Kimux86-123
+
+El nombre de visitante se guarda en una cookie para que permanezca al volver
+desde el mismo navegador.
+
+El servidor entrega una cookie HttpOnly de visitante para reconocer quién creó
+cada mensaje grupal sin publicar ese identificador. Si se inicia sesión, los
+mensajes nuevos quedan asociados a la cuenta. Solo el propietario puede editar
+o borrar sus mensajes. Los mensajes antiguos creados con el identificador
+anterior no se pueden editar ni borrar; desaparecerán con la limpieza normal.
+
+Funciones del chat grupal:
+  - Mensajes de texto.
+  - Imágenes.
+  - Varias imágenes acumuladas antes de enviar.
+  - GIFs mediante GIPHY.
+  - Mensajes de voz.
+  - Respuestas a otros mensajes.
+  - Edición de mensajes propios.
+  - Borrado de mensajes propios.
+  - Fotos de perfil para cuentas registradas.
+
+La barra GIF puede abrirse y cerrarse desde el botón GIFs. Cuando está cerrada,
+el espacio se utiliza para mostrar más mensajes. Cuando se abre, la interfaz
+reacomoda el área del chat.
+
+En teléfonos, el chat ocupa la pantalla principal. El botón ☰ abre el panel
+de conversaciones y amigos desde la izquierda; el botón de información abre
+los detalles desde la derecha. Toca el fondo oscuro o pulsa × para cerrarlos.
+El panel de GIFs empieza cerrado en teléfonos para dejar más espacio al chat.
+
+
+4. CUENTAS Y PERFILES
+---------------------
+
+Crear una cuenta es opcional. Una cuenta usa:
+
+  - Correo electrónico para iniciar sesión.
+  - Contraseña.
+  - Nombre visible.
+  - Nombre de usuario.
+  - Foto de perfil opcional.
+
+El nombre visible es el nombre principal que aparece en los mensajes.
+
+El nombre de usuario es un identificador único y siempre comienza con @.
+Ejemplo:
+
+  Nombre visible: Carlos
+  Nombre de usuario: @carlos_123
+
+Reglas del nombre de usuario:
+  - Entre 3 y 20 caracteres después de @.
+  - Solo letras, números y guion bajo.
+  - No puede estar repetido.
+  - Si se escribe sin @, el servidor lo agrega automáticamente.
+
+El botón de perfil de la esquina superior izquierda abre el menú del perfil.
+Desde ahí se puede cambiar:
+  - Foto de perfil.
+  - Nombre visible.
+  - Nombre de usuario.
+
+Las contraseñas no se guardan directamente. El servidor usa crypto.scrypt para
+guardar un hash y una sal en accounts.json.
+
+La sesión se identifica mediante la cookie HttpOnly bruma-session.
+
+
+5. AMISTADES
+------------
+
+Para agregar a alguien:
+
+  1. Inicia sesión.
+  2. Pulsa el botón + en la barra superior.
+  3. Escribe el nombre de usuario, por ejemplo @ana.
+  4. Pulsa Enviar.
+
+La otra persona verá la solicitud en Solicitudes recibidas y podrá:
+  - Aceptarla.
+  - Rechazarla.
+
+Cuando se acepta una solicitud, el avatar de la persona aparece en la barra
+superior de ambos usuarios.
+
+Las amistades se guardan en storage/friends.json y no desaparecen durante la
+limpieza de mensajes.
+
+
+6. CHATS PRIVADOS
+-----------------
+
+Para abrir un chat privado, pulsa el avatar de un amigo en la barra superior.
+
+El chat privado:
+  - Tiene una conversación separada del chat grupal.
+  - Solo puede abrirse entre amigos aceptados.
+  - Usa los nombres visibles y nombres de usuario de las cuentas.
+  - Guarda sus mensajes en private-messages.json.
+  - Elimina cada mensaje después de 24 horas.
+  - Se actualiza en tiempo real mediante Server-Sent Events.
+  - Los eventos privados se envían solo a las sesiones de ambos participantes.
+
+Actualmente el chat privado admite mensajes de texto. Los controles de imágenes
+y voz se ocultan al entrar en un chat privado para evitar enviar contenido al
+endpoint equivocado.
+
+
+7. LIMPIEZA Y CADUCIDAD
+-----------------------
+
+Mensajes grupales:
+  - Caducan después de 12 horas desde su creación.
+  - También se eliminan durante la limpieza diaria de las 00:00 según la hora
+    local del servidor.
+  - Cuando no quedan mensajes, messages.json se elimina.
+
+Mensajes privados:
+  - Caducan después de 24 horas desde su creación.
+  - Se revisan periódicamente cada 30 segundos.
+  - Cuando una conversación queda vacía, se elimina del archivo privado.
+
+La limpieza se ejecuta tanto cuando llega una petición al servidor como en un
+temporizador interno.
+
+
+8. VARIABLES CONFIGURABLES
+--------------------------
+
+En server.js existen variables que se pueden cambiar:
+
+PORT
+  Puerto del servidor. Por defecto: 3000.
+
+HOST
+  Dirección en la que escucha el servidor. Por defecto: 0.0.0.0. Para usar el
+  túnel de Railway, inicia la app con HOST=127.0.0.1.
+
+MAX_IMAGES_PER_MESSAGE
+  Máximo de imágenes por mensaje. Por defecto: 10.
+
+MAX_REQUEST_BYTES
+  Tamaño máximo permitido para una petición HTTP. Por defecto: 30 MB.
+
+GIPHY_API_KEY
+  Clave de API de GIPHY. Si no se configura, el buscador de GIFs muestra un
+  aviso y no puede hacer búsquedas.
+
+Para usar un dominio de Railway mientras los datos permanecen en tu laptop,
+consulta RAILWAY_SETUP.md.
+
+Ejemplo en Linux:
+
+  GIPHY_API_KEY=tu_clave PORT=3000 npm start
+
+También puedes cambiar directamente MAX_IMAGES_PER_MESSAGE en server.js, pero
+usar una variable de entorno es más práctico para no modificar el código.
+
+
+9. API PRINCIPAL
+----------------
+
+Mensajes grupales:
+  GET    /api/messages
+  POST   /api/messages
+  PATCH  /api/messages/:id
+  DELETE /api/messages/:id
+
+Sesión y cuentas:
+  GET    /api/auth/me
+  POST   /api/auth/register
+  POST   /api/auth/login
+  POST   /api/auth/logout
+  PATCH  /api/auth/profile
+
+Amistades:
+  GET    /api/friends
+  POST   /api/friends/requests
+  PATCH  /api/friends/requests/:id
+
+Chats privados:
+  GET    /api/private/messages/:username
+  POST   /api/private/messages
+
+Eventos en tiempo real:
+  GET    /api/events
+
+El endpoint /api/events utiliza Server-Sent Events para informar a los
+navegadores cuando cambian los mensajes, amistades o chats privados.
+
+
+10. SEGURIDAD Y LIMITACIONES IMPORTANTES
+----------------------------------------
+
+Este proyecto es educativo y está pensado para grupos pequeños.
+
+Importante:
+  - No publiques el servidor en Internet sin agregar HTTPS y más medidas de
+    seguridad.
+  - No compartas accounts.json, porque contiene datos de cuentas y hashes.
+  - No guardes claves de GIPHY directamente en el código si el proyecto se
+    publica.
+  - Las imágenes, audios y mensajes se guardan como datos dentro de archivos
+    JSON, por lo que muchos archivos grandes pueden aumentar bastante el uso
+    de disco.
+  - El sistema no usa una base de datos; los archivos JSON funcionan para un
+    proyecto pequeño, pero no son ideales para muchos usuarios simultáneos.
+  - El servidor valida la propiedad de los mensajes grupales con la cookie
+    HttpOnly de visitante o con la sesión de la cuenta. No publica esos datos
+    de propiedad en la API de mensajes.
+  - Los eventos de chats privados se envían solo a sus participantes, y dejan
+    de enviarse a una sesión al cerrarla.
+  - La limpieza depende de que el proceso de Node.js esté ejecutándose.
+
+
+11. SOLUCIÓN DE PROBLEMAS
+------------------------
+
+No abre la página:
+  - Comprueba que ejecutaste npm start.
+  - Revisa si el puerto 3000 está ocupado.
+  - Prueba PORT=4000 npm start.
+
+No funcionan GIFs:
+  - Comprueba que GIPHY_API_KEY esté configurada.
+  - Reinicia el servidor después de cambiar la variable.
+
+No aparece un amigo:
+  - Verifica que el nombre de usuario esté escrito exactamente.
+  - Comprueba que la solicitud haya sido aceptada.
+  - Recarga la página con Ctrl+F5.
+
+No se conserva el perfil:
+  - Comprueba que realmente hayas iniciado sesión.
+  - Guarda los cambios desde el menú de perfil.
+  - No borres la cookie de sesión.
+
+Para revisar errores del servidor, observa la terminal donde ejecutaste npm
+start. Para revisar errores del navegador, abre las herramientas de desarrollo
+del navegador y consulta la consola.
+
+
+12. ARCHIVOS QUE NO DEBES BORRAR ACCIDENTALMENTE
+-----------------------------------------------
+
+accounts.json
+  Contiene las cuentas registradas.
+
+friends.json
+  Contiene amistades y solicitudes.
+
+private-messages.json
+  Contiene chats privados que aún no han caducado.
+
+messages.json
+  Contiene mensajes grupales que aún no han caducado.
+
+Los cuatro archivos se encuentran dentro de la carpeta storage y son creados
+automáticamente por el servidor cuando son necesarios.

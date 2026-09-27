@@ -1,5 +1,7 @@
 # Bruma — chat efímero
 
+#HECHO CON IA - NO USAR
+
 Chat web para grupos pequeños con sala compartida, cuentas opcionales, amistades y conversaciones privadas. Los mensajes grupales caducan después de 12 horas o durante la limpieza de medianoche; los privados, después de 24 horas. Cuentas, amistades y mensajes se guardan en archivos JSON dentro de `storage/`.
 
 ## Uso local

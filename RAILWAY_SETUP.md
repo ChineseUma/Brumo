@@ -46,26 +46,35 @@ Instala las dependencias una vez:
 npm ci
 ```
 
-En una terminal, inicia el servidor local:
+Si compartiste el token con alguien, cámbialo por uno nuevo en Railway. En la carpeta del proyecto, crea `.env.local` con este contenido (usa la dirección completa con `https://`):
 
-```bash
-HOST=127.0.0.1 PORT=3000 npm start
+```dotenv
+RAILWAY_URL=https://tu-dominio.up.railway.app
+TUNNEL_TOKEN=pega_aqui_el_token_de_Railway
+PORT=3000
 ```
 
-Si usas GIFs, agrega `GIPHY_API_KEY=tu_clave` a ese comando. La clave de GIPHY pertenece al servidor local, no al puente de Railway.
+Protege el archivo con `chmod 600 .env.local`. Está ignorado por Git; no lo subas ni compartas. Si usas GIFs, añade `GIPHY_API_KEY=tu_clave` al mismo archivo. La clave pertenece al servidor local, no al puente de Railway.
 
-En otra terminal, inicia el túnel con el mismo token de Railway:
+Si todavía tienes un `npm start` o `npm run tunnel` abierto, ciérralo con Ctrl+C antes de usar el controlador. Luego ejecuta:
 
 ```bash
-RAILWAY_URL=https://bruma-xxxx.up.railway.app TUNNEL_TOKEN=tu_token_aleatorio LOCAL_PORT=3000 npm run tunnel
+npm run bruma -- iniciar
+npm run bruma -- estado
 ```
 
-Debe aparecer `Túnel conectado a Railway.`. Ahora `/health` mostrará `{"connected":true}` y el dominio abrirá Bruma. El cliente del túnel se reconecta automáticamente si pierde la conexión.
+`iniciar` deja ambos procesos en segundo plano. `estado` muestra si el servidor responde y si Railway informa que el túnel está conectado. Para apagarlos:
+
+```bash
+npm run bruma -- detener
+```
+
+Los registros están en `storage/.bruma-control/server.log` y `storage/.bruma-control/tunnel.log`. El controlador solo detiene procesos iniciados por él; si el puerto 3000 ya lo ocupa una instancia manual, te lo indicará sin cerrarla. El cliente del túnel se reconecta automáticamente si pierde la conexión.
 
 ## Comportamiento y límites
 
 - La laptop debe seguir encendida, conectada a Internet y con ambos procesos ejecutándose. Si se apaga o duerme, el dominio seguirá existiendo, pero mostrará un error `503` hasta que vuelva a conectarse.
-- Las cuentas, amistades y mensajes quedan en `storage/` en la laptop. Haz copias de seguridad de esa carpeta. Reiniciar `server.js` cierra las sesiones actuales porque estas viven en memoria.
+- Las cuentas, amistades y mensajes quedan en `storage/` en la laptop. Las sesiones se conservan al reiniciar hasta su caducidad. Los mensajes y medios usan SQLite en modo WAL: para respaldarlos, detén el servidor antes de copiar `storage/` o usa una copia consistente de SQLite que incluya las escrituras pendientes del WAL.
 - Railway termina HTTPS; el puente se conecta mediante WSS y usa el token para autenticar a la laptop. El servidor local escucha solo en `127.0.0.1` con el comando anterior.
 - El dominio es público: cualquier persona que conozca la dirección puede entrar como visitante o crear una cuenta. Este proyecto sigue pensado para grupos pequeños; antes de difundirlo ampliamente harían falta controles contra abuso, límites de registro e intentos de inicio de sesión.
 - No configures `server.js` como proceso de Railway si quieres conservar los datos en la laptop.

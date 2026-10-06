@@ -90,6 +90,7 @@ time { color: #849083; font: 10px 'DM Mono', monospace; }
 .message-audio { display: block; width: min(100%, 320px); margin: 3px 0 8px; border-radius: 10px; overflow: hidden; background: #111511; }
 .edit-button { margin-top: 9px; padding: 0; border: 0; color: #9fbd96; background: transparent; font-size: 11px; font-weight: 600; }
 .edit-button:hover { color: #d0ebc7; background: transparent; }
+.history-more { display: block; margin: 0 auto 16px; }
 .message-actions { display: flex; align-items: center; gap: 11px; margin-top: 9px; }
 .message-actions button { display: inline-flex; align-items: center; height: 18px; margin: 0; padding: 0; border: 0; color: #9fbd96; background: transparent; font-size: 11px; line-height: 1; font-weight: 600; }
 .message-actions button:hover { color: #d0ebc7; background: transparent; }
@@ -211,6 +212,18 @@ body { background: #161616; }
 .image-picker:hover { border-color: #c45b5b; color: #fff; background: #681313; }
 .save-profile { color: #fff; background: #9c1919; }
 .save-profile:hover { background: #c32626; }
+.attachment-toggle { width: 42px; padding: 0; color: #f0caca; border-color: #8d3333; background: #3d1111; font-size: 23px; line-height: 1; }
+.attachment-toggle:hover { background: #681313; }
+.attachment-menu { position: absolute; z-index: 8; right: 28px; bottom: 76px; display: flex; flex-direction: column; gap: 5px; min-width: 142px; padding: 8px; border: 1px solid #8d3333; border-radius: 12px; background: #261b1b; box-shadow: 0 14px 35px #000b; }
+.attachment-menu[hidden] { display: none; }
+.attachment-menu button { padding: 9px 12px; color: #f0caca; background: #3d1111; text-align: left; font-size: 12px; }
+.attachment-menu button:hover { background: #681313; }
+.message-file { display: flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%; margin: 7px 0; padding: 9px 11px; border: 1px solid #813535; border-radius: 9px; color: #f0caca; background: #2b1515; overflow-wrap: anywhere; text-decoration: none; }
+.message-file:hover { background: #4c1b1b; }
+.message-file small { color: #d18b8b; white-space: nowrap; }
+.queued-file { display: flex; align-items: center; gap: 8px; max-width: 280px; padding: 7px 9px; border: 1px solid #813535; border-radius: 8px; color: #f0caca; background: #2b1515; font-size: 11px; }
+.queued-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queued-file button { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; color: #fff; background: #5a2020; line-height: 18px; }
 .gif-result.selected { border-color: #d55d5d; }
 .reply-composer { border-left-color: #d56b6b; background: #2d1717; }
 .reply-composer strong,

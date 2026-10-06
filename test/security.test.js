@@ -44,9 +44,9 @@ function browser(base) {
       }
       assert.equal(response.status, 200);
     },
-    async events() {
+    async events(delta = false) {
       const controller = new AbortController();
-      const response = await fetch(`${base}/api/events`, {
+      const response = await fetch(`${base}/api/events${delta ? '?v=2' : ''}`, {
         headers: { Cookie: [...cookies].map(([name, value]) => `${name}=${value}`).join('; ') },
         signal: controller.signal
       });
@@ -90,6 +90,7 @@ async function waitFor(predicate, timeout = 2000) {
 test('propiedad de mensajes y privacidad de eventos', async t => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'bruma-security-'));
   fs.copyFileSync(path.join(__dirname, '..', 'server.js'), path.join(temp, 'server.js'));
+  fs.cpSync(path.join(__dirname, '..', 'lib'), path.join(temp, 'lib'), {recursive: true});
   fs.mkdirSync(path.join(temp, 'public'));
   fs.writeFileSync(path.join(temp, 'public', 'index.html'), 'ok');
   const port = await freePort();
@@ -137,21 +138,53 @@ test('propiedad de mensajes y privacidad de eventos', async t => {
   const requests = await bob.request('/api/friends');
   assert.equal((await bob.request(`/api/friends/requests/${requests.data.incoming[0].id}`, 'PATCH', { action: 'accept' })).status, 200);
 
-  streams = await Promise.all([alice.events(), bob.events(), carol.events(), guest.events()]);
+  streams = await Promise.all([alice.events(true), bob.events(true), carol.events(true), guest.events(true)]);
+  streams.push(await guest.events());
+  await waitFor(() => streams.every(stream => stream.received.some(event => event.type === 'messages')));
+  const newGroupMessage = await alice.request('/api/messages', 'POST', { author: 'fake', text: 'solo el cambio' });
+  assert.equal(newGroupMessage.status, 201);
+  await waitFor(() => streams.every(stream => stream.received.some(event => event.type === 'message-created' || event.type === 'messages' && event.data.some(item => item.id === newGroupMessage.data.id))));
+  assert.equal(streams[0].received.find(event => event.type === 'message-created').data.canEdit, true);
+  assert.equal(streams[1].received.find(event => event.type === 'message-created').data.canEdit, false);
+  assert.equal(streams[0].received.find(event => event.type === 'message-created').data.text, 'solo el cambio');
+  assert.equal(streams[4].received.at(-1).type, 'messages');
+  assert.equal((await alice.request(`/api/messages/${newGroupMessage.data.id}`, 'PATCH', { text: 'corregido' })).status, 200);
+  await waitFor(() => streams[0].received.some(event => event.type === 'message-updated'));
+  assert.equal(streams[1].received.find(event => event.type === 'message-updated').data.text, 'corregido');
+  assert.equal((await alice.request(`/api/messages/${newGroupMessage.data.id}`, 'DELETE')).status, 200);
+  await waitFor(() => streams[0].received.some(event => event.type === 'message-deleted'));
+  assert.deepEqual(streams[0].received.find(event => event.type === 'message-deleted').data, { id: newGroupMessage.data.id });
+
   const privateMessage = await alice.request('/api/private/messages', 'POST', { recipientUsername: '@bob', text: 'solo para Bob' });
   assert.equal(privateMessage.status, 201);
-  await waitFor(() => streams[0].received.some(event => event.type === 'private') && streams[1].received.some(event => event.type === 'private'));
+  await waitFor(() => streams[0].received.some(event => event.type === 'private-created') && streams[1].received.some(event => event.type === 'private-created'));
   await new Promise(resolve => setTimeout(resolve, 150));
-  assert.equal(streams[0].received.find(event => event.type === 'private').data.friendUsername, '@bob');
-  assert.equal(streams[1].received.find(event => event.type === 'private').data.friendUsername, '@alice');
-  assert.equal(streams[2].received.some(event => event.type === 'private'), false);
-  assert.equal(streams[3].received.some(event => event.type === 'private'), false);
+  assert.equal(streams[0].received.find(event => event.type === 'private-created').data.friendUsername, '@bob');
+  assert.equal(streams[1].received.find(event => event.type === 'private-created').data.friendUsername, '@alice');
+  assert.equal(streams[2].received.some(event => event.type === 'private-created'), false);
+  assert.equal(streams[3].received.some(event => event.type === 'private-created'), false);
+  assert.equal(streams[4].received.some(event => event.type === 'private'), false);
+
+  const privateMedia = await alice.request('/api/private/messages', 'POST', {
+    recipientUsername: '@bob', text: '',
+    images: ['data:image/png;base64,aGVsbG8='],
+    audioData: 'data:audio/mp4;base64,aGVsbG8=',
+    gifUrl: 'https://media.giphy.com/media/test/giphy.gif'
+  });
+  assert.equal(privateMedia.status, 201);
+  assert.equal(privateMedia.data.images.length, 1);
+  assert.match(privateMedia.data.audioData, /^data:audio\/mp4/);
+  assert.match(privateMedia.data.gifUrl, /^https:\/\//);
 
   assert.equal((await alice.request('/api/auth/logout', 'POST')).status, 200);
   assert.equal((await alice.request(`/api/messages/${accountMessage.data.id}`, 'DELETE')).status, 403);
-  const beforeLogout = streams[0].received.filter(event => event.type === 'private').length;
+  const beforeLogout = streams[0].received.filter(event => event.type === 'private-created').length;
   assert.equal((await bob.request('/api/private/messages', 'POST', { recipientUsername: '@alice', text: 'después de salir' })).status, 201);
-  await waitFor(() => streams[1].received.filter(event => event.type === 'private').length === 2);
+  await waitFor(() => streams[1].received.filter(event => event.type === 'private-created').length === 2);
   await new Promise(resolve => setTimeout(resolve, 150));
-  assert.equal(streams[0].received.filter(event => event.type === 'private').length, beforeLogout);
+  assert.equal(streams[0].received.filter(event => event.type === 'private-created').length, beforeLogout);
+  const reconnected = await bob.events(true);
+  streams.push(reconnected);
+  await waitFor(() => reconnected.received.some(event => event.type === 'private' && event.data.messages.some(message => message.text === 'después de salir')));
+
 });

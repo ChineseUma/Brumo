@@ -2,14 +2,21 @@
   "name": "chat-efimero",
   "version": "1.0.0",
   "private": true,
-  "description": "Chat grupal pequeño con mensajes temporales",
+  "description": "Chat grupal peque\u00f1o con mensajes temporales",
   "scripts": {
     "start": "node server.js",
     "start:railway": "node railway/relay.js",
     "tunnel": "node railway/client.js",
-    "test": "node --test"
+    "bruma": "node bruma.js",
+    "test": "node --test",
+    "test:unit": "node --test test/message-store.test.js test/wire.test.js test/sender.test.js test/tunnel-memory.test.js",
+    "benchmark:store": "node tools/benchmark-store.js",
+    "benchmark:messages": "node tools/benchmark-messages.js . --tunnel"
   },
   "dependencies": {
     "ws": "^8.21.3"
+  },
+  "engines": {
+    "node": ">=22.16.0"
   }
 }

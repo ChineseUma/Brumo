@@ -1,0 +1,61 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const net = require('node:net');
+const crypto = require('node:crypto');
+const {gzipSync} = require('node:zlib');
+const {spawn} = require('node:child_process');
+const {once} = require('node:events');
+const wait = ms => new Promise(resolve=>setTimeout(resolve,ms));
+async function fixture(t) {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'bruma-delivery-'));
+  for(const file of ['server.js','lib'])fs.cpSync(path.join(__dirname,'..',file),path.join(root,file),{recursive:true});
+  fs.mkdirSync(path.join(root,'public'));fs.writeFileSync(path.join(root,'public/index.html'),'fixture');
+  const probe=net.createServer();probe.listen(0,'127.0.0.1');await once(probe,'listening');
+  const port=probe.address().port;await new Promise(resolve=>probe.close(resolve));
+  const child=spawn(process.execPath,[path.join(root,'server.js')],{env:{...process.env,HOST:'127.0.0.1',PORT:String(port)},stdio:'ignore'});
+  t.after(async()=>{if(child.exitCode===null){const ended=once(child,'exit');child.kill();await ended;}fs.rmSync(root,{recursive:true,force:true});});
+  const base=`http://127.0.0.1:${port}`;
+  for(let i=0;;i++){try{if((await fetch(base)).ok)break;}catch{}if(i>150)throw Error('No inició');await wait(20);}
+  const first=await fetch(base);
+  const cookie=first.headers.get('set-cookie').split(';')[0];
+  return {base,headers:{Cookie:cookie,'Content-Type':'application/json','X-Bruma-Version':'3'}};
+}
+test('envío comprimido, confirmación idempotente, medios bajo demanda y cookies inválidas', async t=>{
+  const {base,headers}=await fixture(t);
+  const image='data:image/png;base64,'+crypto.randomBytes(50000).toString('base64');
+  const data={author:'Visitante',text:'hola 日本',clientId:crypto.randomUUID(),images:[image],avatarData:image};
+  const responses=await Promise.all(Array.from({length:8},()=>fetch(base+'/api/messages',{method:'POST',headers:{...headers,'Content-Encoding':'gzip'},body:gzipSync(JSON.stringify(data))})));
+  assert.equal(responses.filter(r=>r.status===201).length,1);
+  assert.equal(responses.filter(r=>r.status===200).length,7);
+  const results=await Promise.all(responses.map(r=>r.json()));
+  assert.equal(new Set(results.map(item=>item.id)).size,1);
+  const compact=results[0];assert.match(compact.images[0],/^\/api\/media\/[a-f0-9]{64}$/);
+  assert.equal(compact.images[0],compact.avatarData);
+  assert.ok(Buffer.byteLength(JSON.stringify(compact))<1000);
+  const media=await fetch(base+compact.images[0]);assert.equal((await media.arrayBuffer()).byteLength,50000);
+  const partial=await fetch(base+compact.images[0],{headers:{Range:'bytes=5-9'}});
+  assert.equal(partial.status,206);assert.equal((await partial.arrayBuffer()).byteLength,5);
+  const bad=await fetch(base+compact.images[0],{headers:{Range:'bytes=50001-'}});assert.equal(bad.status,416);
+  const legacy=await(await fetch(base+'/api/messages',{headers:{Cookie:headers.Cookie}})).json();
+  assert.equal(legacy.length,1);assert.equal(legacy[0].images[0],image);
+  assert.equal((await fetch(base+'/api/messages',{headers:{Cookie:'bruma-guest=%'}})).status,200);
+  const edited=await fetch(base+'/api/messages/'+compact.id,{method:'PATCH',headers,body:JSON.stringify({text:'corregido'})});
+  assert.equal(edited.status,200);
+  assert.equal((await edited.json()).text,'corregido');
+  assert.equal((await fetch(base+'/api/messages/'+compact.id,{method:'DELETE',headers})).status,200);
+  assert.equal((await(await fetch(base+'/api/messages',{headers})).json()).length,0);
+});
+test('registros simultáneos no duplican la cuenta y HTML adjunto se descarga', async t=>{
+  const {base,headers}=await fixture(t);
+  const registrations=await Promise.all(Array.from({length:4},()=>fetch(base+'/api/auth/register',{method:'POST',headers,body:JSON.stringify({email:'fixture@example.test',username:'fixture',password:'fixture-password'})})));
+  assert.equal(registrations.filter(r=>r.status===201).length,1);
+  assert.equal(registrations.filter(r=>r.status===409).length,3);
+  const upload=await fetch(base+'/api/uploads',{method:'POST',headers:{...headers,'Content-Type':'text/html'},body:'<html>fixture</html>'});
+  assert.equal(upload.status,201);
+  const stored=await upload.json();const download=await fetch(base+stored.url);
+  assert.match(download.headers.get('content-disposition'),/^attachment;/);
+  assert.equal(download.headers.get('x-content-type-options'),'nosniff');
+});

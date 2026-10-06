@@ -1,6 +1,8 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { WebSocketServer, WebSocket } = require('ws');
+const wire = require('./wire');
+const {TunnelSender, priority} = require('./sender');
 
 const PORT = Number(process.env.PORT) || 3000;
 const TOKEN = process.env.TUNNEL_TOKEN || '';
@@ -17,14 +19,15 @@ const pending = new Map();
 const wss = new WebSocketServer({ noServer: true, maxPayload: 50_000_000, perMessageDeflate: false });
 let tunnel = null;
 
-function send(ws, message) {
+function send(ws, message, bytes, done) {
   if (ws.readyState !== WebSocket.OPEN) return false;
   if (ws.bufferedAmount > 64_000_000) {
     ws.terminate();
     return false;
   }
-  ws.send(JSON.stringify(message), error => { if (error) ws.terminate(); });
-  return true;
+  ws.sender ||= new TunnelSender(ws, 'body');
+  const importance = message.type === 'request' ? priority(message) : pending.get(message.id)?.importance ?? 1;
+  return ws.sender.send(message, bytes, done, importance);
 }
 
 function finishWithError(id, status, text) {
@@ -49,20 +52,30 @@ function responseHeaders(headers = {}) {
   return filtered;
 }
 
-function handleTunnelMessage(ws, raw) {
+function handleTunnelMessage(ws, raw, binary) {
   let message;
-  try { message = JSON.parse(raw.toString()); } catch { ws.close(1003, 'Mensaje inválido'); return; }
+  try { message = wire.decode(raw, binary); } catch { ws.close(1003, 'Mensaje inválido'); return; }
+  if (message.type === 'hello' && message.binary === 1) { ws.binary = true; return; }
   const request = pending.get(message.id);
   if (!request || request.tunnel !== ws) return;
   const response = request.response;
   try {
+    if (message.type === 'upload-pause') { request.uploadPaused = true; request.input?.pause(); return; }
+    if (message.type === 'upload-resume') { request.uploadPaused = false; request.input?.resume(); return; }
     if (message.type === 'response') {
       if (response.headersSent) return;
       const status = Number(message.status);
       response.writeHead(status >= 100 && status <= 599 ? status : 502, responseHeaders(message.headers));
+      response.flushHeaders();
     } else if (message.type === 'chunk') {
       if (!response.headersSent) return finishWithError(message.id, 502, 'Respuesta incompleta del servidor local.');
-      response.write(Buffer.from(message.data || '', 'base64'));
+      const chunk = message.bytes || Buffer.from(message.data || '', 'base64');
+      if (response.writableLength + chunk.length > 4_000_000) { send(ws, {type: 'cancel', id: message.id}); pending.delete(message.id); response.destroy(); return; }
+      if (!response.write(chunk) && !request.paused) {
+        request.paused = true;
+        send(ws, {type: 'pause', id: message.id});
+        response.once('drain', () => { request.paused = false; send(ws, {type: 'resume', id: message.id}); });
+      }
     } else if (message.type === 'end') {
       pending.delete(message.id);
       response.end();
@@ -87,7 +100,7 @@ function authorized(req) {
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    return res.end(JSON.stringify({ connected: tunnel?.readyState === WebSocket.OPEN }));
+    return res.end(JSON.stringify({ connected: tunnel?.readyState === WebSocket.OPEN, protocol: tunnel?.binary ? 2 : 1 }));
   }
   if (req.url.startsWith('/_bruma/')) {
     res.writeHead(404);
@@ -97,6 +110,38 @@ const server = http.createServer((req, res) => {
   if (!currentTunnel || currentTunnel.readyState !== WebSocket.OPEN) {
     res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8', 'Retry-After': '5' });
     return res.end('El servidor de Bruma está desconectado. Intenta de nuevo en unos segundos.');
+  }
+
+  if (pending.size >= 128) { res.writeHead(503, {'Retry-After':'1'}); return res.end('Servidor ocupado. Reintenta el envío.'); }
+  const streamBody = req.headers['content-length'] === undefined
+    ? !['GET', 'HEAD'].includes(req.method) : Number(req.headers['content-length']) > 8192;
+  if (currentTunnel.binary && streamBody) {
+    const id = crypto.randomUUID();
+    const request = {response: res, tunnel: currentTunnel, input: req, uploadPaused: false, importance: 0};
+    pending.set(id, request);
+    res.on('close', () => {
+      if (!pending.has(id)) return;
+      pending.delete(id); send(currentTunnel, {type:'cancel', id});
+    });
+    if (!send(currentTunnel, {type:'request', id, method:req.method, path:req.url, headers:req.headers, streaming:true})) {
+      finishWithError(id, 503, 'Servidor desconectado.'); return;
+    }
+    let size = 0;
+    req.on('data', chunk => {
+      if (!pending.has(id)) return;
+      size += chunk.length;
+      if (size > MAX_REQUEST_BYTES) {
+        send(currentTunnel, {type:'cancel',id}); finishWithError(id,413,'Petición demasiado grande.'); return;
+      }
+      req.pause();
+      if (!send(currentTunnel, {type:'body',id}, chunk, error => {
+        if (!error && !request.uploadPaused) req.resume();
+      })) { finishWithError(id,503,'Servidor desconectado.'); req.resume(); }
+    });
+    req.on('end', () => { if (pending.has(id)) send(currentTunnel,{type:'body-end',id}); });
+    req.on('error', () => res.destroy());
+    req.on('aborted', () => res.destroy());
+    return;
   }
 
   let size = 0;
@@ -114,7 +159,7 @@ const server = http.createServer((req, res) => {
     }
     if (res.destroyed) return;
     const id = crypto.randomUUID();
-    pending.set(id, { response: res, tunnel: currentTunnel });
+    pending.set(id, { response: res, tunnel: currentTunnel, importance: priority({path: req.url, headers: req.headers}) });
     res.on('close', () => {
       if (!pending.has(id)) return;
       pending.delete(id);
@@ -122,8 +167,8 @@ const server = http.createServer((req, res) => {
     });
     if (!send(currentTunnel, {
       type: 'request', id, method: req.method, path: req.url,
-      headers: req.headers, body: Buffer.concat(chunks).toString('base64')
-    })) finishWithError(id, 503, 'El servidor de Bruma está desconectado.');
+      headers: req.headers
+    }, Buffer.concat(chunks))) finishWithError(id, 503, 'El servidor de Bruma está desconectado.');
   });
   req.on('error', () => { if (!res.destroyed) res.destroy(); });
 });
@@ -142,7 +187,8 @@ wss.on('connection', ws => {
   tunnel = ws;
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
-  ws.on('message', raw => handleTunnelMessage(ws, raw));
+  ws.on('message', (raw, binary) => handleTunnelMessage(ws, raw, binary));
+  send(ws, {type: 'hello', binary: 1});
   ws.on('error', error => console.error('Error del túnel:', error.message));
   ws.on('close', () => {
     for (const [id, request] of pending) {

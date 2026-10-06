@@ -2,3 +2,10 @@ node_modules/
 .env
 .env.*
 storage/
+android/.gradle/
+android/.idea/
+android/**/build/
+android/local.properties
+android/*.jks
+android/.toolchain/
+android/.private/

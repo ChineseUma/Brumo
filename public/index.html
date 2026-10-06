@@ -117,11 +117,18 @@
           <input id="avatar" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp" />
           <label class="sr-only" for="text">Mensaje</label>
           <input id="text" maxlength="500" placeholder="Escribe algo..." autocomplete="off" />
-          <label class="image-picker" for="image" title="Adjuntar imagen">+<span>Imagen</span></label>
+          <button id="attachment-toggle" class="attachment-toggle" type="button" aria-label="Agregar contenido" aria-expanded="false">+</button>
           <input id="image" class="sr-only" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple />
+          <input id="audio-file" class="sr-only" type="file" accept="audio/*" />
+          <input id="any-file" class="sr-only" type="file" />
           <button id="record" class="record-button" type="button" aria-label="Grabar mensaje de voz">● Voz</button>
           <button type="submit" aria-label="Enviar mensaje"><span class="send-label">Enviar</span> <span aria-hidden="true">↗</span></button>
         </form>
+        <div id="attachment-menu" class="attachment-menu" hidden>
+          <button type="button" data-attachment="image">Imágenes</button>
+          <button type="button" data-attachment="audio">Audios</button>
+          <button type="button" data-attachment="file">Archivos</button>
+        </div>
         <div id="image-queue" class="image-queue" aria-live="polite"></div>
         <p id="image-status" class="image-status" aria-live="polite"></p>
         <p class="notice">Los mensajes se eliminan automáticamente después de 12 horas y durante la limpieza diaria de las 00:00.</p>

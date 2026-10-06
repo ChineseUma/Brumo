@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.application'
+}
+
+def signingFile = rootProject.file('.private/release.properties')
+def signingValues = new java.util.Properties()
+if (signingFile.exists()) signingFile.withInputStream { signingValues.load(it) }
+
+android {
+    namespace 'com.bruma.chat'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.bruma.chat'
+        minSdk 26
+        targetSdk 35
+        versionCode 8
+        versionName '0.2.4'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    signingConfigs {
+        release {
+            if (signingFile.exists()) {
+                storeFile rootProject.file(signingValues.getProperty('storeFile'))
+                storePassword signingValues.getProperty('storePassword')
+                keyAlias signingValues.getProperty('keyAlias')
+                keyPassword signingValues.getProperty('keyPassword')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (signingFile.exists()) signingConfig signingConfigs.release
+            minifyEnabled false
+        }
+    }
+
+    applicationVariants.all { variant ->
+        if (variant.buildType.name == 'release') {
+            variant.outputs.all {
+                outputFileName = "bruma-${variant.versionName}.apk"
+            }
+        }
+    }
+}
+
+dependencies {
+    implementation 'com.squareup.okhttp3:okhttp:5.3.0'
+}

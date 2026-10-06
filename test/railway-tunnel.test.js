@@ -31,6 +31,7 @@ test('Railway reenvía la app y los eventos, mientras los datos quedan en la lap
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'bruma-tunnel-'));
   fs.mkdirSync(path.join(temp, 'public'));
   fs.copyFileSync(path.join(__dirname, '..', 'server.js'), path.join(temp, 'server.js'));
+  fs.cpSync(path.join(__dirname, '..', 'lib'), path.join(temp, 'lib'), {recursive: true});
   fs.writeFileSync(path.join(temp, 'public', 'index.html'), '<h1>Bruma local</h1>');
   const localPort = await freePort();
   const relayPort = await freePort();
@@ -63,7 +64,7 @@ test('Railway reenvía la app y los eventos, mientras los datos quedan en la lap
   client = spawn(process.execPath, [path.join(__dirname, '..', 'railway', 'client.js')], {
     env: { ...process.env, RAILWAY_URL: url, TUNNEL_TOKEN: token, LOCAL_PORT: String(localPort) }, stdio: 'ignore'
   });
-  await waitFor(async () => (await (await fetch(`${url}/health`)).json()).connected);
+  await waitFor(async () => (await (await fetch(`${url}/health`)).json()).protocol === 2);
 
   const page = await fetch(url);
   assert.equal(page.status, 200);
@@ -83,8 +84,32 @@ test('Railway reenvía la app y los eventos, mientras los datos quedan en la lap
   assert.equal(saved.canEdit, true);
   const list = await fetch(`${url}/api/messages`, { headers: { Cookie: cookie } });
   assert.equal((await list.json())[0].text, 'Guardado en laptop');
-  const disk = JSON.parse(fs.readFileSync(path.join(temp, 'storage', 'messages.json'), 'utf8'));
-  assert.equal(disk[0].text, 'Guardado en laptop');
+  const {DatabaseSync} = require('node:sqlite');
+  const db = new DatabaseSync(path.join(temp, 'storage', 'chat.sqlite'), {readOnly: true});
+  assert.equal(JSON.parse(db.prepare('SELECT body FROM messages').get().body).text, 'Guardado en laptop');
+  db.close();
+
+  const uploadStart = await fetch(`${url}/api/uploads/start`, {
+    method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'prueba.txt', type: 'text/plain', size: 13 })
+  });
+  assert.equal(uploadStart.status, 201);
+  const uploadId = (await uploadStart.json()).id;
+  const uploadChunk = await fetch(`${url}/api/uploads/${uploadId}/chunk`, {
+    method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/octet-stream' }, body: 'archivo bruma'
+  });
+  assert.equal(uploadChunk.status, 200);
+  const uploadFinish = await fetch(`${url}/api/uploads/${uploadId}/finish`, { method: 'POST', headers: { Cookie: cookie } });
+  assert.equal(uploadFinish.status, 201);
+  const uploaded = await uploadFinish.json();
+  const fileMessage = await fetch(`${url}/api/messages`, {
+    method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ author: 'Desde Railway', files: [uploaded] })
+  });
+  assert.equal(fileMessage.status, 201);
+  const downloaded = await fetch(`${url}${uploaded.url}`);
+  assert.equal(downloaded.status, 200);
+  assert.equal(await downloaded.text(), 'archivo bruma');
   const register = await fetch(`${url}/api/auth/register`, {
     method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: 'railway-test@example.com', username: '@railway_test', password: 'password123' })
@@ -95,14 +120,41 @@ test('Railway reenvía la app y los eventos, mientras los datos quedan en la lap
   assert.equal(JSON.parse(fs.readFileSync(path.join(temp, 'storage', 'accounts.json'), 'utf8')).length, 1);
 
   const controller = new AbortController();
-  const events = await fetch(`${url}/api/events`, { headers: { Cookie: cookie }, signal: controller.signal });
+  const events = await fetch(`${url}/api/events?v=2`, { headers: { Cookie: cookie }, signal: controller.signal });
   assert.equal(events.status, 200);
   assert.match(events.headers.get('content-type'), /text\/event-stream/);
   const reader = events.body.getReader();
   const firstEvent = await reader.read();
   assert.match(new TextDecoder().decode(firstEvent.value), /Guardado en laptop/);
+  const second = await fetch(`${url}/api/messages`, {
+    method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ author: 'Desde Railway', text: 'Solo el mensaje nuevo' })
+  });
+  assert.equal(second.status, 201);
+  let update = '';
+  while (!update.includes('\n\n')) {
+    const chunk = await reader.read();
+    assert.equal(chunk.done, false);
+    update += new TextDecoder().decode(chunk.value);
+  }
+  assert.match(update, /event: message-created/);
+  assert.match(update, /Solo el mensaje nuevo/);
+  assert.doesNotMatch(update, /Guardado en laptop/);
   controller.abort();
   await reader.cancel().catch(() => {});
+
+  // More than one wire frame, gzip in flight, then compact media retrieval.
+  const crypto = require('node:crypto');
+  const {gzipSync} = require('node:zlib');
+  const bytes = crypto.randomBytes(250000);
+  const compactPost = await fetch(`${url}/api/messages`, {
+    method:'POST', headers:{Cookie:cookie,'Content-Type':'application/json','Content-Encoding':'gzip','X-Bruma-Version':'3'},
+    body:gzipSync(JSON.stringify({author:'Prueba',text:'comprimido',clientId:crypto.randomUUID(),images:['data:image/png;base64,'+bytes.toString('base64')]}))
+  });
+  assert.equal(compactPost.status,201);
+  const compactBody = await compactPost.json();
+  assert.match(compactBody.images[0], /^\/api\/media\//);
+  assert.deepEqual(Buffer.from(await(await fetch(url+compactBody.images[0])).arrayBuffer()),bytes);
 
   client.kill();
   await waitFor(async () => !(await (await fetch(`${url}/health`)).json()).connected);

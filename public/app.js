@@ -1,3 +1,15 @@
+// Compact media responses; external GIF requests keep their own headers.
+async function apiFetch(url, options = {}) {
+  if (!String(url).startsWith('https://') && typeof options.body === 'string' && options.body.length > 16384 && 'CompressionStream' in window) {
+    const compressed = new Blob([options.body]).stream().pipeThrough(new CompressionStream('gzip'));
+    options = {...options, body: await new Response(compressed).blob(), headers: {...options.headers, 'Content-Encoding': 'gzip'}};
+  }
+  return window.fetch(url, String(url).startsWith('https://') ? options : {
+    ...options, headers: {'X-Bruma-Version': '3', ...options.headers}
+  });
+}
+const outbox = new Map();
+function roomKey() { return activePrivateFriend?.username || ''; }
 const messagesElement = document.querySelector('#messages');
 const replyComposer = document.querySelector('#reply-composer');
 const replyAuthor = document.querySelector('#reply-author');
@@ -23,6 +35,10 @@ const profileAvatarPreview = document.querySelector('#profile-avatar-preview');
 const profileUsernameInput = document.querySelector('#profile-username');
 const textInput = document.querySelector('#text');
 const imageInput = document.querySelector('#image');
+const audioFileInput = document.querySelector('#audio-file');
+const anyFileInput = document.querySelector('#any-file');
+const attachmentToggle = document.querySelector('#attachment-toggle');
+const attachmentMenu = document.querySelector('#attachment-menu');
 const imageQueue = document.querySelector('#image-queue');
 const imageStatus = document.querySelector('#image-status');
 const recordButton = document.querySelector('#record');
@@ -68,6 +84,9 @@ const mobileBackdrop = document.querySelector('#mobile-drawer-backdrop');
 const mobileLayout = window.matchMedia('(max-width: 860px)');
 
 let currentMessages = [];
+const MESSAGE_PAGE_SIZE = 40;
+let visibleMessageLimit = MESSAGE_PAGE_SIZE;
+let renderedRoom = '';
 let mediaRecorder;
 let recordedChunks = [];
 let audioData = '';
@@ -77,6 +96,7 @@ let selectedGifUrl = '';
 let giphyApiKey = '';
 let maxImagesPerMessage = 10;
 let pendingImages = [];
+let pendingFiles = [];
 let avatarData = '';
 let draftAvatarData = avatarData;
 let gifsOpen = localStorage.getItem('bruma-gifs-open') === 'true'
@@ -146,7 +166,7 @@ accountToggle.addEventListener('click', () => { setMobileDrawer(); accountDialog
 closeAccount.addEventListener('click', () => { accountDialog.hidden = true; });
 
 async function accountRequest(endpoint) {
-  const response = await fetch(endpoint, {
+  const response = await apiFetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: accountEmail.value.trim(), username: accountUsername.value.trim(), password: accountPassword.value })
@@ -174,7 +194,7 @@ function renderFriends() {
 }
 
 async function loadFriends() {
-  const response = await fetch('/api/friends');
+  const response = await apiFetch('/api/friends');
   if (!response.ok) {
     friendsData = { friends: [], incoming: [], outgoing: [] };
     renderFriends();
@@ -189,6 +209,7 @@ async function loadFriends() {
 async function openPrivateChat(friend) {
   setMobileDrawer();
   activePrivateFriend = friend;
+  render([]);
   chatPanel.classList.add('private-mode');
   groupRoom.classList.remove('active');
   roomTitle.textContent = `${friend.displayName} ${friend.username}`;
@@ -196,23 +217,27 @@ async function openPrivateChat(friend) {
   sideRoomDescription.textContent = `Conversación privada con ${friend.username}.`;
   sidePrivacyCopy.textContent = 'Los mensajes privados se eliminan después de 24 horas.';
   pendingImages = [];
+  pendingFiles = [];
   audioData = '';
   selectedGifUrl = '';
   renderPendingImages();
   imageStatus.textContent = '';
   updateGifPanel();
   renderFriends();
-  const response = await fetch(`/api/private/messages/${encodeURIComponent(friend.username)}`);
+  const response = await apiFetch(`/api/private/messages/${encodeURIComponent(friend.username)}`);
   if (!response.ok) {
     imageStatus.textContent = 'No se pudo abrir el chat privado.';
     return;
   }
-  render(await response.json());
+  const history = await response.json();
+  if (activePrivateFriend?.username === friend.username) render(history);
 }
 
 async function openGroupChat() {
   setMobileDrawer();
+  const wasPrivate = Boolean(activePrivateFriend);
   activePrivateFriend = null;
+  if (wasPrivate) render([]);
   chatPanel.classList.remove('private-mode');
   groupRoom.classList.add('active');
   roomTitle.textContent = 'Sala del grupo';
@@ -236,7 +261,7 @@ closeFriends.addEventListener('click', () => { friendsMenu.hidden = true; });
 sendFriendRequest.addEventListener('click', async () => {
   const username = friendUsername.value.trim();
   if (!username) return;
-  const response = await fetch('/api/friends/requests', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }) });
+  const response = await apiFetch('/api/friends/requests', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username }) });
   const result = await response.json();
   friendsStatus.textContent = result.error || (result.accepted ? 'Solicitud aceptada. Ya son amigos.' : 'Solicitud enviada.');
   if (response.ok) { friendUsername.value = ''; await loadFriends(); }
@@ -245,7 +270,7 @@ sendFriendRequest.addEventListener('click', async () => {
 incomingRequests.addEventListener('click', async event => {
   const button = event.target.closest('[data-request-id]');
   if (!button) return;
-  const response = await fetch(`/api/friends/requests/${encodeURIComponent(button.dataset.requestId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: button.dataset.requestAction }) });
+  const response = await apiFetch(`/api/friends/requests/${encodeURIComponent(button.dataset.requestId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: button.dataset.requestAction }) });
   const result = await response.json();
   friendsStatus.textContent = result.error || 'Solicitud actualizada.';
   if (response.ok) await loadFriends();
@@ -284,7 +309,7 @@ loginAccount.addEventListener('click', async () => {
 });
 
 logoutAccount.addEventListener('click', async () => {
-  await fetch('/api/auth/logout', { method: 'POST' });
+  await apiFetch('/api/auth/logout', { method: 'POST' });
   avatarData = '';
   draftAvatarData = '';
   localStorage.removeItem('bruma-avatar');
@@ -324,31 +349,114 @@ function timeLabel(timestamp) {
 }
 
 function render(messages) {
-  currentMessages = messages;
-  messagesElement.innerHTML = messages.length ? messages.map(message => `
-    <article class="message">
+  if (renderedRoom !== roomKey()) { visibleMessageLimit = MESSAGE_PAGE_SIZE; renderedRoom = roomKey(); }
+  currentMessages = messages.filter(message => !message.pending);
+  // A reconnect snapshot can acknowledge a send whose POST response was lost.
+  for (const message of currentMessages) if (message.clientId) outbox.delete(message.clientId);
+  for (const [id, item] of outbox) {
+    if (item.room === roomKey() && !currentMessages.some(message => message.clientId === id)) currentMessages.push(item.message);
+  }
+  renderVisibleMessages();
+  messagesElement.scrollTop = messagesElement.scrollHeight;
+}
+
+function renderVisibleMessages() {
+  const first = Math.max(0, currentMessages.length - visibleMessageLimit);
+  messagesElement.innerHTML = currentMessages.length
+    ? (first ? '<button type="button" class="history-more" data-history-more>Mostrar mensajes anteriores</button>' : '')
+      + currentMessages.slice(first).map(messageMarkup).join('')
+    : '<p class="empty">Todavía no hay mensajes. Deja el primero.</p>';
+}
+
+messagesElement.addEventListener('click', event => {
+  if (!event.target.closest('[data-history-more]')) return;
+  const oldHeight = messagesElement.scrollHeight, oldTop = messagesElement.scrollTop;
+  visibleMessageLimit += MESSAGE_PAGE_SIZE;
+  renderVisibleMessages();
+  messagesElement.scrollTop = oldTop + messagesElement.scrollHeight - oldHeight;
+});
+
+function messageMarkup(message) {
+  return `
+    <article class="message" data-message-id="${message.id}">
       <div class="message-meta">${avatarMarkup(message)}<div class="message-name-row"><strong>${escapeHtml(message.author)}${message.isAccount ? `<span class="account-star" title="Cuenta registrada">★</span><span class="message-username">${escapeHtml(message.username || '')}</span>` : ''}</strong><time>${timeLabel(message.createdAt)}${message.edited ? ' · editado' : ''}</time></div></div>
       ${message.replyTo ? `<div class="reply-preview"><strong>↪ ${escapeHtml(message.replyTo.author)}</strong><span>${escapeHtml(message.replyTo.text)}</span></div>` : ''}
       ${renderImages(message)}
       ${message.gifUrl ? renderMedia(message.gifUrl, `GIF enviado por ${message.author}`) : ''}
-      ${message.audioData ? `<audio class="message-audio" controls preload="metadata" src="${message.audioData}"></audio>` : ''}
+      ${message.audioData ? `<audio class="message-audio" controls preload="none" src="${escapeHtml(message.audioData)}"></audio>` : ''}
+      ${renderFiles(message)}
       ${message.text ? `<p>${escapeHtml(message.text)}</p>` : ''}
-      <div class="message-actions">
+      ${message.pending ? `<div class="delivery-status">${message.failed ? 'No enviado · ' : 'Enviando…'}${message.failed ? `<button type="button" data-retry-id="${message.clientId}">Reintentar</button>` : ''}</div>` : ''}
+      <div class="message-actions" ${message.pending ? 'hidden' : ''}>
         <button class="reply-button" data-reply-id="${message.id}">Responder</button>
         ${message.canEdit ? `<button class="edit-button" data-message-id="${message.id}">Editar</button><button class="delete-button" data-delete-id="${message.id}">Borrar</button>` : ''}
       </div>
-    </article>`).join('') : '<p class="empty">Todavía no hay mensajes. Deja el primero.</p>';
-  messagesElement.scrollTop = messagesElement.scrollHeight;
+    </article>`;
+}
+
+function messageNode(id) { return messagesElement.querySelector(`[data-message-id="${CSS.escape(id)}"]`); }
+function addIncomingMessage(message) {
+  if (!message?.id) return;
+  if (message.clientId && !message.pending) outbox.delete(message.clientId);
+  const pending = message.clientId && currentMessages.find(item => item.pending && item.clientId === message.clientId);
+  if (pending) {
+    const index = currentMessages.indexOf(pending);
+    currentMessages[index] = message;
+    const node = messageNode(pending.id);
+    if (node) node.outerHTML = messageMarkup(message);
+    return;
+  }
+  if (currentMessages.some(item => item.id === message.id)) return;
+  const nearBottom = messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight < 100;
+  if (!currentMessages.length) messagesElement.innerHTML = '';
+  currentMessages.push(message);
+  messagesElement.insertAdjacentHTML('beforeend', messageMarkup(message));
+  if (nearBottom || message.pending) {
+    // Bound the live DOM while following the conversation; preserve an older reading position.
+    const nodes = messagesElement.querySelectorAll('article.message');
+    for (let index = 0; index < nodes.length - visibleMessageLimit; index++) nodes[index].remove();
+    if (currentMessages.length > visibleMessageLimit && !messagesElement.querySelector('[data-history-more]')) {
+      messagesElement.insertAdjacentHTML('afterbegin', '<button type="button" class="history-more" data-history-more>Mostrar mensajes anteriores</button>');
+    }
+  }
+  if (nearBottom || message.pending) messagesElement.scrollTop = messagesElement.scrollHeight;
+}
+function updateIncomingMessage(message) {
+  const index = currentMessages.findIndex(item => item.id === message?.id);
+  if (index < 0) return;
+  currentMessages[index] = message;
+  const node = messageNode(message.id);
+  if (node) node.outerHTML = messageMarkup(message);
+}
+function deleteIncomingMessage(id) {
+  currentMessages = currentMessages.filter(item => item.id !== id);
+  messageNode(id)?.remove();
+  if (!currentMessages.length) render([]);
+  else if (messagesElement.querySelectorAll('article.message').length < Math.min(visibleMessageLimit, currentMessages.length)) {
+    const oldTop = messagesElement.scrollTop;
+    renderVisibleMessages();
+    messagesElement.scrollTop = oldTop;
+  }
 }
 
 function avatarMarkup(message) {
-  if (message.avatarData) return `<img class="profile-avatar" src="${message.avatarData}" alt="Foto de perfil de ${escapeHtml(message.author)}">`;
+  if (message.avatarData) return `<img class="profile-avatar" src="${escapeHtml(message.avatarData)}" loading="lazy" decoding="async" alt="Foto de perfil de ${escapeHtml(message.author)}">`;
   return `<div class="profile-avatar profile-fallback" aria-hidden="true">${escapeHtml((message.author || '?').slice(0, 1).toUpperCase())}</div>`;
 }
 
 function renderImages(message) {
   const images = message.images || (message.imageData ? [message.imageData] : []);
   return images.length ? `<div class="message-images ${images.length === 1 ? 'single' : ''}">${images.map((image, index) => renderMedia(image, `Imagen ${index + 1} enviada por ${message.author}`)).join('')}</div>` : '';
+}
+
+function renderFiles(message) {
+  if (message.pending) return (message.files || []).map(file => `<span class="message-file">📎 ${escapeHtml(file.name)}</span>`).join('');
+  return (message.files || []).map(file => `<a class="message-file" href="/api/uploads/${encodeURIComponent(file.id)}${file.token ? `?token=${encodeURIComponent(file.token)}` : ''}" target="_blank" rel="noopener">📎 ${escapeHtml(file.name || 'Archivo')} <small>${formatBytes(file.size || 0)}</small></a>`).join('');
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes >= 100 * 1024 * 1024 ? 0 : 1)} MB`;
 }
 
 function renderMedia(url, alt) {
@@ -369,57 +477,102 @@ function updateCleanupClock() {
 }
 
 async function loadMessages() {
-  const response = await fetch('/api/messages');
-  render(await response.json());
+  const response = await apiFetch('/api/messages');
+  const history = await response.json();
+  if (!activePrivateFriend) render(history);
 }
 
-form.addEventListener('submit', async event => {
-  event.preventDefault();
-  if (activePrivateFriend) {
-    const privateText = textInput.value.trim();
-    if (!privateText) return;
-    if (pendingImages.length || audioData || selectedGifUrl) {
-      imageStatus.textContent = 'El chat privado admite mensajes de texto por ahora.';
-      return;
-    }
-    try {
-      const response = await fetch('/api/private/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recipientUsername: activePrivateFriend.username, text: privateText }) });
-      const result = await response.json();
-      if (!response.ok) { imageStatus.textContent = result.error || 'No se pudo enviar el mensaje privado.'; return; }
-      textInput.value = '';
-      imageStatus.textContent = '';
-      return;
-    } catch {
-      imageStatus.textContent = 'No se pudo conectar con el chat privado.';
-      return;
+async function uploadAttachment(file, recipientUsername = '') {
+  if (file.size <= 10_000_000) {
+    const response = await apiFetch('/api/uploads', {method: 'POST', headers: {
+      'Content-Type': file.type || 'application/octet-stream', 'X-Bruma-File-Name': encodeURIComponent(file.name),
+      ...(recipientUsername ? {'X-Bruma-Recipient': recipientUsername} : {})
+    }, body: file, signal: AbortSignal.timeout(120000)});
+    const uploaded = await response.json();
+    if (!response.ok) throw new Error(uploaded.error || 'No se pudo subir el archivo.');
+    return uploaded;
+  }
+  const startResponse = await apiFetch('/api/uploads/start', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: file.name, type: file.type || 'application/octet-stream', size: file.size, recipientUsername })
+  });
+  const started = await startResponse.json();
+  if (!startResponse.ok) throw new Error(started.error || 'No se pudo iniciar la subida.');
+  const chunkSize = 2 * 1024 * 1024;
+  for (let offset = 0; offset < file.size; offset += chunkSize) {
+    const chunkResponse = await apiFetch(`/api/uploads/${encodeURIComponent(started.id)}/chunk`, {
+      method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file.slice(offset, offset + chunkSize)
+    });
+    if (!chunkResponse.ok) {
+      const error = await chunkResponse.json().catch(() => ({}));
+      throw new Error(error.error || 'No se pudo subir una parte del archivo.');
     }
   }
-  const author = authorInput.value.trim();
-  const text = textInput.value.trim();
-  if (!author || (!text && !pendingImages.length && !audioData && !selectedGifUrl)) return;
-  authorInput.value = author;
-  saveNameCookie(author);
+  const finishResponse = await apiFetch(`/api/uploads/${encodeURIComponent(started.id)}/finish`, { method: 'POST' });
+  const uploaded = await finishResponse.json();
+  if (!finishResponse.ok) throw new Error(uploaded.error || 'No se pudo completar la subida.');
+  return uploaded;
+}
+
+async function transmit(item) {
+  if (item.running) return;
+  if (item.identity !== (activeAccount?.email || 'guest')) { imageStatus.textContent = 'Vuelve a la cuenta que inició este envío para reintentarlo.'; return; }
+  item.running = true;
+  item.message.failed = false;
+  if (roomKey() === item.room) updateIncomingMessage(item.message);
   try {
-    const images = pendingImages.map(item => item.dataUrl);
-    const response = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ author, text, images, audioData, gifUrl: selectedGifUrl, avatarData, replyToId }) });
-    const result = await response.json();
-    if (!response.ok) {
-      imageStatus.textContent = result.error || 'No se pudo enviar el mensaje.';
-      return;
+    while (item.payload.files.length < item.files.length) {
+      const file = item.files[item.payload.files.length];
+      item.payload.files.push(await uploadAttachment(file, item.room));
     }
-    textInput.value = '';
-    imageInput.value = '';
-    pendingImages = [];
-    renderPendingImages();
-    audioData = '';
-    selectedGifUrl = '';
-    replyToId = '';
-    replyComposer.hidden = true;
-    imageStatus.textContent = '';
-    textInput.focus();
-  } catch {
-    imageStatus.textContent = 'No se pudo conectar con el servidor. Ejecuta: npm start';
-  }
+    let response;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        response = await apiFetch(item.room ? '/api/private/messages' : '/api/messages', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(item.payload), signal: AbortSignal.timeout(20000)
+        });
+        if (response.status < 500 || attempt) break;
+      } catch (error) { if (attempt) throw error; }
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'No se pudo enviar.');
+    outbox.delete(item.payload.clientId);
+    if (roomKey() === item.room) addIncomingMessage(result);
+  } catch (error) {
+    // SSE may already have confirmed an HTTP request whose response was lost.
+    if (outbox.has(item.payload.clientId)) {
+      item.message.failed = true;
+      if (roomKey() === item.room) updateIncomingMessage(item.message);
+      imageStatus.textContent = error.message || 'No se pudo enviar. Puedes reintentar.';
+    }
+  } finally { item.running = false; }
+}
+form.addEventListener('submit', event => {
+  event.preventDefault();
+  const room = roomKey(), author = authorInput.value.trim(), text = textInput.value.trim();
+  if ((!room && !author) || (!text && !pendingImages.length && !pendingFiles.length && !audioData && !selectedGifUrl)) return;
+  if (outbox.size >= 20) { imageStatus.textContent = 'Hay envíos pendientes. Espera o reinténtalos antes de enviar más.'; return; }
+  const clientId = crypto.randomUUID();
+  const images = pendingImages.map(item => item.dataUrl);
+  const payload = {clientId, text, images, audioData, gifUrl: selectedGifUrl, files: []};
+  if (room) payload.recipientUsername = room;
+  else { payload.author = author; payload.replyToId = replyToId; if (!activeAccount && avatarData) payload.avatarData = avatarData; }
+  const message = {id: `pending-${clientId}`, clientId, author: activeAccount?.displayName || author,
+    text, images, audioData, gifUrl: selectedGifUrl, createdAt: Date.now(), pending: true,
+    avatarData: activeAccount?.avatarData || avatarData, files: pendingFiles.map(item => ({name: item.file.name, size: item.file.size}))};
+  const item = {room, identity: activeAccount?.email || 'guest', payload, message, files: pendingFiles.map(item => item.file), running: false};
+  outbox.set(clientId, item);
+  addIncomingMessage(message);
+  textInput.value = ''; imageInput.value = ''; audioFileInput.value = ''; anyFileInput.value = '';
+  pendingImages = []; pendingFiles = []; audioData = ''; selectedGifUrl = ''; replyToId = '';
+  replyComposer.hidden = true; renderPendingImages(); imageStatus.textContent = ''; textInput.focus();
+  transmit(item);
+});
+messagesElement.addEventListener('click', event => {
+  const id = event.target.closest('[data-retry-id]')?.dataset.retryId;
+  if (id && outbox.has(id)) transmit(outbox.get(id));
 });
 
 avatarPicker.addEventListener('click', () => { profileMenu.hidden = !profileMenu.hidden; });
@@ -466,7 +619,7 @@ saveProfile.addEventListener('click', async () => {
     imageStatus.textContent = 'El usuario debe empezar con @ y tener entre 3 y 20 caracteres.';
     return;
   }
-  const response = await fetch('/api/auth/profile', {
+  const response = await apiFetch('/api/auth/profile', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ displayName: name, username, avatarData: draftAvatarData })
@@ -534,7 +687,7 @@ gifForm.addEventListener('submit', async event => {
   gifStatus.textContent = 'Buscando...';
   try {
     const params = new URLSearchParams({ api_key: giphyApiKey, q: query, limit: '12', rating: 'g', lang: 'es' });
-    const response = await fetch(`https://api.giphy.com/v1/gifs/search?${params}`);
+    const response = await apiFetch(`https://api.giphy.com/v1/gifs/search?${params}`);
     if (!response.ok) throw new Error('GIPHY no respondió');
     const result = await response.json();
     gifResults.innerHTML = result.data.map(gif => {
@@ -642,13 +795,53 @@ imageInput.addEventListener('change', () => {
   imageInput.value = '';
 });
 
+attachmentToggle.addEventListener('click', () => {
+  attachmentMenu.hidden = !attachmentMenu.hidden;
+  attachmentToggle.setAttribute('aria-expanded', String(!attachmentMenu.hidden));
+});
+
+attachmentMenu.addEventListener('click', event => {
+  const button = event.target.closest('[data-attachment]');
+  if (!button) return;
+  attachmentMenu.hidden = true;
+  attachmentToggle.setAttribute('aria-expanded', 'false');
+  if (button.dataset.attachment === 'image') imageInput.click();
+  if (button.dataset.attachment === 'audio') audioFileInput.click();
+  if (button.dataset.attachment === 'file') anyFileInput.click();
+});
+
+audioFileInput.addEventListener('change', async () => {
+  const file = audioFileInput.files[0];
+  audioFileInput.value = '';
+  if (!file) return;
+  if (!file.type.startsWith('audio/') || file.size > 10 * 1024 * 1024) {
+    imageStatus.textContent = 'Cada audio debe ser válido y pesar como máximo 10 MB.';
+    return;
+  }
+  audioData = await readFileAsDataUrl(file);
+  imageStatus.textContent = 'Audio listo para enviar.';
+});
+
+anyFileInput.addEventListener('change', () => {
+  const file = anyFileInput.files[0];
+  anyFileInput.value = '';
+  if (!file) return;
+  if (file.size > 500 * 1024 * 1024) {
+    imageStatus.textContent = 'Cada archivo debe pesar como máximo 500 MB.';
+    return;
+  }
+  pendingFiles.push({ id: crypto.randomUUID(), file });
+  renderPendingImages();
+  imageStatus.textContent = `${pendingFiles.length} archivo(s) listo(s) para enviar.`;
+});
+
 async function addImages(files) {
   if (pendingImages.length + files.length > maxImagesPerMessage) {
     imageStatus.textContent = `Puedes acumular como máximo ${maxImagesPerMessage} imágenes.`;
     return;
   }
-  if (files.some(file => file.size > 4 * 1024 * 1024)) {
-    imageStatus.textContent = 'Cada imagen debe pesar menos de 4 MB.';
+  if (files.some(file => file.size > 10 * 1024 * 1024)) {
+    imageStatus.textContent = 'Cada imagen debe pesar como máximo 10 MB.';
     return;
   }
   try {
@@ -671,15 +864,17 @@ function renderPendingImages() {
     <div class="queued-image">
       <img src="${image.dataUrl}" alt="${escapeHtml(image.name)}">
       <button type="button" data-remove-image="${image.id}" aria-label="Quitar ${escapeHtml(image.name)}">×</button>
-    </div>`).join('');
+    </div>`).join('') + pendingFiles.map(item => `
+    <div class="queued-file"><span>📎 ${escapeHtml(item.file.name)}</span><button type="button" data-remove-file="${item.id}" aria-label="Quitar archivo">×</button></div>`).join('');
 }
 
 imageQueue.addEventListener('click', event => {
-  const button = event.target.closest('[data-remove-image]');
+  const button = event.target.closest('[data-remove-image], [data-remove-file]');
   if (!button) return;
   pendingImages = pendingImages.filter(image => image.id !== button.dataset.removeImage);
+  pendingFiles = pendingFiles.filter(item => item.id !== button.dataset.removeFile);
   renderPendingImages();
-  imageStatus.textContent = pendingImages.length ? `${pendingImages.length} imágenes listas para enviar.` : '';
+  imageStatus.textContent = pendingImages.length || pendingFiles.length ? 'Contenido listo para enviar.' : '';
 });
 
 messagesElement.addEventListener('click', async event => {
@@ -725,10 +920,10 @@ cancelReply.addEventListener('click', () => {
 
 async function deleteMessage(messageId) {
   const deleteUrl = `/api/messages/${encodeURIComponent(messageId)}`;
-  const response = await fetch(deleteUrl, { method: 'DELETE' });
+  const response = await apiFetch(deleteUrl, { method: 'DELETE' });
   const result = await response.json();
   if (response.ok) {
-    await loadMessages();
+    deleteIncomingMessage(messageId);
     return true;
   }
   imageStatus.textContent = result.error || 'No se pudo borrar el mensaje.';
@@ -770,33 +965,41 @@ saveEdit.addEventListener('click', async () => {
   if (!pendingEditId || !text) return;
   const messageId = pendingEditId;
   closeEditDialog();
-  const response = await fetch(`/api/messages/${encodeURIComponent(messageId)}`, {
+  const response = await apiFetch(`/api/messages/${encodeURIComponent(messageId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text })
   });
-  if (response.ok) await loadMessages();
+  if (response.ok) updateIncomingMessage(await response.json());
   else imageStatus.textContent = 'No se pudo editar el mensaje.';
 });
 
 let events;
 function connectEvents() {
   events?.close();
-  events = new EventSource('/api/events');
+  events = new EventSource('/api/events?v=3');
   events.addEventListener('messages', event => { if (!activePrivateFriend) render(JSON.parse(event.data)); });
+  events.addEventListener('message-created', event => { const message = JSON.parse(event.data); if (!activePrivateFriend) addIncomingMessage(message); else if (message.clientId) outbox.delete(message.clientId); });
+  events.addEventListener('message-updated', event => { if (!activePrivateFriend) updateIncomingMessage(JSON.parse(event.data)); });
+  events.addEventListener('message-deleted', event => { if (!activePrivateFriend) deleteIncomingMessage(JSON.parse(event.data).id); });
   events.addEventListener('friends', () => { loadFriends().catch(() => {}); });
+  events.addEventListener('private-created', event => {
+    const data = JSON.parse(event.data);
+    if (activePrivateFriend?.username === data.friendUsername) addIncomingMessage(data.message);
+    else if (data.message?.clientId) outbox.delete(data.message.clientId);
+  });
+  events.addEventListener('private-deleted', event => { const data = JSON.parse(event.data); if (roomKey() === data.friendUsername) deleteIncomingMessage(data.id); });
   events.addEventListener('private', event => {
     const data = JSON.parse(event.data);
     if (activePrivateFriend?.username === data.friendUsername) render(data.messages);
   });
 }
-connectEvents();
-fetch('/api/config').then(response => response.json()).then(config => {
+apiFetch('/api/config').then(response => response.json()).then(config => {
   giphyApiKey = config.giphyApiKey || '';
   maxImagesPerMessage = config.maxImages || 10;
   if (!giphyApiKey) gifStatus.textContent = 'Configura GIPHY_API_KEY para activar el buscador.';
 });
-fetch('/api/auth/me').then(response => response.json()).then(result => {
+apiFetch('/api/auth/me').then(response => response.json()).then(result => {
   if (result.account) {
     avatarData = localStorage.getItem('bruma-avatar') || '';
     draftAvatarData = avatarData;
@@ -808,10 +1011,11 @@ fetch('/api/auth/me').then(response => response.json()).then(result => {
     updateAvatarPreview('');
   }
   showAccount(result.account);
-}).catch(() => {});
+  connectEvents();
+  loadFriends().catch(() => {});
+  setTimeout(() => { if (!currentMessages.length) loadMessages().catch(() => {}); }, 3000);
+}).catch(() => { imageStatus.textContent = 'No se pudo conectar. Recarga para reintentar.'; });
 updateAvatarPreview(avatarData);
-loadFriends().catch(() => {});
 updateGifPanel();
-loadMessages().catch(() => { messagesElement.innerHTML = '<p class="empty">No se pudo conectar con la sala.</p>'; });
 updateCleanupClock();
 setInterval(updateCleanupClock, 30_000);

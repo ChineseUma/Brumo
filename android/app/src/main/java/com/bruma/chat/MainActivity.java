@@ -82,6 +82,9 @@ public final class MainActivity extends Activity {
     private static final int AUDIO_PICK = 104;
     private static final int FILE_PICK = 105;
     private static final int NOTIFICATION_PERMISSION = 106;
+    private static final int BANNER_PICK = 107;
+    private String profileDraftOwner = "";
+    private String profileDraftName = "", profileDraftUsername = "", profileDraftBio = "", profileDraftBanner = "";
     private Intent pendingNotification;
     private static final int MESSAGE_PAGE_SIZE = 40;
 
@@ -235,6 +238,7 @@ public final class MainActivity extends Activity {
         super.onStart();
         foreground = true;
         NotificationService.appVisible = true;
+        requestNotificationsOnFirstLaunch();
         startNotificationService();
         if (messageScroll != null) messageScroll.post(this::loadVisibleMedia);
     }
@@ -597,6 +601,20 @@ public final class MainActivity extends Activity {
             }
         });
         consumeNotification();
+    }
+
+    private void requestNotificationsOnFirstLaunch() {
+        android.content.SharedPreferences prefs = getSharedPreferences("bruma_native",MODE_PRIVATE);
+        if (prefs.getBoolean("notification_onboarding_done",false)) return;
+        prefs.edit().putBoolean("notification_onboarding_done",true).apply();
+        // Preserve a notification choice made in an earlier version.
+        if (prefs.contains("notifications_enabled")) return;
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            prefs.edit().putBoolean("notifications_enabled",false).apply();
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},NOTIFICATION_PERMISSION);
+        } else {
+            prefs.edit().putBoolean("notifications_enabled",true).apply();
+        }
     }
 
     private void startNotificationService() {
@@ -1467,7 +1485,12 @@ public final class MainActivity extends Activity {
         if (requestCode == NOTIFICATION_PERMISSION) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 getSharedPreferences("bruma_native",MODE_PRIVATE).edit().putBoolean("notifications_enabled",true).apply(); startNotificationService(); renderDrawer();
-            } else error("Puedes activar las notificaciones en los ajustes de Android.");
+            } else {
+                getSharedPreferences("bruma_native",MODE_PRIVATE).edit().putBoolean("notifications_enabled",false).apply();
+                stopService(new Intent(this,NotificationService.class));
+                renderDrawer();
+                error("Puedes activar las notificaciones en los ajustes de Android.");
+            }
             return;
         }
         if (requestCode != AUDIO_PERMISSION) return;
@@ -1569,6 +1592,15 @@ public final class MainActivity extends Activity {
         Uri uri = data.getData();
         String type = getContentResolver().getType(uri);
         boolean avatar = request == AVATAR_PICK;
+        if (request == BANNER_PICK) {
+            preparationIo.execute(() -> {
+                try {
+                    String prepared = BannerPreparer.prepare(this,uri);
+                    main.post(() -> { if (!isDestroyed() && account != null) { ensureProfileDraft(); profileDraftBanner = prepared; renderDrawer(); error("Banner listo. Pulsa Guardar perfil."); } });
+                } catch (Exception failure) { main.post(() -> error(failure.getMessage())); }
+            });
+            return;
+        }
         if (request == FILE_PICK) {
             String name = uri.getLastPathSegment() == null ? "archivo" : uri.getLastPathSegment();
             long size = -1;
@@ -1746,7 +1778,12 @@ public final class MainActivity extends Activity {
             drawerItem("Visitante: " + guestName, "Toca para cambiar tu nombre", this::guestNameDialog);
             drawerItem("Iniciar sesión / crear cuenta", "Guarda tu perfil y habla en privado", this::accountDialog);
         } else {
-            drawerItem(account.optString("displayName"), account.optString("username"), this::profileDialog);
+            addProfileEditor();
+            drawerItem("Cambiar banner", "Imagen estática PNG, JPEG o WebP", () -> {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.setType("image/*"); intent.addCategory(Intent.CATEGORY_OPENABLE);
+                startActivityForResult(intent,BANNER_PICK);
+            });
+            drawerItem("Quitar banner", "Se quitará al guardar el perfil", () -> { ensureProfileDraft(); profileDraftBanner = ""; renderDrawer(); });
             drawerItem("Cambiar foto de perfil", "PNG, JPEG, WebP o GIF · hasta 4 MB", () -> {
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                 intent.setType("image/*");
@@ -1762,40 +1799,93 @@ public final class MainActivity extends Activity {
         drawerItem("Actualizar", "Volver a cargar mensajes y cuenta", () -> { hideDrawer(); refreshAll(); });
     }
 
+    private void ensureProfileDraft() {
+        String owner = account == null ? "" : account.optString("email");
+        if (owner.equals(profileDraftOwner)) return;
+        profileDraftOwner = owner;
+        profileDraftName = account == null ? guestName : account.optString("displayName");
+        profileDraftUsername = account == null ? "" : account.optString("username");
+        profileDraftBio = account == null ? "" : account.optString("bio");
+        profileDraftBanner = account == null ? "" : account.optString("bannerData");
+    }
+
     private void addProfilePreview() {
-        LinearLayout card = column();
-        card.setGravity(Gravity.CENTER_HORIZONTAL);
-        card.setPadding(d(12), d(16), d(12), d(16));
-        card.setBackground(background(CARD, 14));
-        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-1, -2);
-        cardParams.bottomMargin = d(10);
-        drawerContent.addView(card, cardParams);
-        String name = account == null ? guestName : account.optString("displayName", guestName);
-        String avatar = account == null ? "" : account.optString("avatarData");
-        if (avatar.isEmpty()) {
-            TextView fallback = label(name.isEmpty() ? "?" : name.substring(0, 1).toUpperCase(Locale.ROOT), 46, TEXT, true);
-            fallback.setGravity(Gravity.CENTER);
-            fallback.setBackground(background(DEEP_RED, 24));
-            card.addView(fallback, new LinearLayout.LayoutParams(d(112), d(112)));
+        ensureProfileDraft();
+        JSONObject preview = new JSONObject();
+        try {
+            preview.put("displayName",account == null ? guestName : profileDraftName).put("username",account == null ? "Visitante" : profileDraftUsername)
+                .put("avatarData",account == null ? "" : account.optString("avatarData")).put("bannerData",profileDraftBanner).put("bio",profileDraftBio);
+        } catch (Exception ignored) { }
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1,-2); params.bottomMargin = d(14);
+        drawerContent.addView(profileCard(preview),params);
+    }
+
+    private LinearLayout profileCard(JSONObject profile) {
+        final int surface = 0xff2b2b2b;
+        LinearLayout card = column(); card.setBackground(background(surface,14)); card.setClipToOutline(true);
+        FrameLayout header = new FrameLayout(this);
+        card.addView(header,new LinearLayout.LayoutParams(-1,d(176)));
+        ImageView banner = new ImageView(this); banner.setScaleType(ImageView.ScaleType.CENTER_CROP); banner.setBackgroundColor(DEEP_RED);
+        header.addView(banner,new FrameLayout.LayoutParams(-1,d(128)));
+        String bannerData = profile.optString("bannerData");
+        if (!bannerData.isEmpty()) banner.post(() -> loadImage(banner,bannerData,1200));
+        String name = profile.optString("displayName"), avatarData = profile.optString("avatarData");
+        View avatar;
+        if (avatarData.isEmpty()) {
+            TextView initial = label(name.isEmpty() ? "?" : name.substring(0,1).toUpperCase(Locale.ROOT),36,TEXT,true);
+            initial.setGravity(Gravity.CENTER); avatar = initial;
         } else {
-            ImageView image = new ImageView(this);
-            image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            card.addView(image, new LinearLayout.LayoutParams(d(112), d(112)));
-            trackAnimation(image); image.post(() -> loadImage(image,avatar,384));
-            image.setOnClickListener(v -> {
-                Drawable shown = image.getDrawable();
-                if (shown != null && shown.getConstantState() != null) shown = shown.getConstantState().newDrawable();
-                showImageViewer(shown);
-            });
+            ImageView image = new ImageView(this); image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            trackAnimation(image); image.post(() -> loadImage(image,avatarData,384)); avatar = image;
+            image.setOnClickListener(v -> { Drawable shown = image.getDrawable(); if (shown != null && shown.getConstantState() != null) shown = shown.getConstantState().newDrawable(); showImageViewer(shown); });
         }
-        TextView displayName = label(name, 17, TEXT, true);
-        displayName.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(-1, -2);
-        nameParams.topMargin = d(10);
-        card.addView(displayName, nameParams);
-        TextView handle = label(account == null ? "Visitante" : account.optString("username"), 13, MUTED, false);
-        handle.setGravity(Gravity.CENTER);
-        card.addView(handle);
+        GradientDrawable circle = new GradientDrawable(); circle.setShape(GradientDrawable.OVAL); circle.setColor(0xff151515); circle.setStroke(d(2),surface);
+        avatar.setBackground(circle); avatar.setClipToOutline(true);
+        FrameLayout.LayoutParams avatarParams = new FrameLayout.LayoutParams(d(96),d(96)); avatarParams.leftMargin = d(16); avatarParams.topMargin = d(80);
+        header.addView(avatar,avatarParams);
+        LinearLayout body = column(); body.setPadding(d(16),d(14),d(16),d(20)); card.addView(body,new LinearLayout.LayoutParams(-1,-2));
+        TextView title = label(name,22,TEXT,true); body.addView(title,new LinearLayout.LayoutParams(-1,-2));
+        TextView handle = label(profile.optString("username"),14,MUTED,false);
+        LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(-1,-2); handleParams.topMargin = d(4); body.addView(handle,handleParams);
+        String bio = profile.optString("bio");
+        if (!bio.isEmpty()) {
+            TextView biography = label(bio,14,TEXT,false); biography.setPadding(d(14),d(14),d(14),d(14)); biography.setBackground(background(0xff151515,8));
+            biography.setLineSpacing(d(3),1f);
+            LinearLayout.LayoutParams bioParams = new LinearLayout.LayoutParams(-1,-2); bioParams.topMargin = d(22); body.addView(biography,bioParams);
+        }
+        return card;
+    }
+
+    private void addProfileEditor() {
+        ensureProfileDraft();
+        drawerContent.addView(label("Nombre visible",12,MUTED,false));
+        EditText name = field("Nombre visible",profileDraftName); name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(30)});
+        drawerContent.addView(name,new LinearLayout.LayoutParams(-1,d(52)));
+        drawerContent.addView(label("Nombre de usuario",12,MUTED,false));
+        EditText username = field("@usuario",profileDraftUsername); username.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(21)});
+        drawerContent.addView(username,new LinearLayout.LayoutParams(-1,d(52)));
+        drawerContent.addView(label("Biografía personal · hasta 2000 caracteres",12,MUTED,false));
+        EditText bio = field("Cuéntanos algo sobre ti...",profileDraftBio); bio.setSingleLine(false); bio.setMinLines(3); bio.setGravity(Gravity.TOP);
+        bio.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        bio.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(2000)});
+        drawerContent.addView(bio,new LinearLayout.LayoutParams(-1,-2));
+        watchProfileField(name,value -> profileDraftName=value); watchProfileField(username,value -> profileDraftUsername=value); watchProfileField(bio,value -> profileDraftBio=value);
+        drawerItem("Guardar perfil","Nombre, usuario, biografía y banner",() -> {
+            final String savedName = profileDraftName, savedUsername = profileDraftUsername, savedBio = profileDraftBio, savedBanner = profileDraftBanner;
+            run(() -> {
+                JSONObject body = new JSONObject().put("displayName",savedName).put("username",savedUsername).put("bio",savedBio).put("bannerData",savedBanner).put("avatarData",account.optString("avatarData"));
+                JSONObject result = (JSONObject)api.request("PATCH","/api/auth/profile",body);
+                main.post(() -> { account = result.optJSONObject("account"); profileDraftOwner = ""; ensureProfileDraft(); renderDrawer(); error("Perfil guardado."); });
+            });
+        });
+    }
+
+    private void watchProfileField(EditText field,java.util.function.Consumer<String> change) {
+        field.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value,int start,int count,int after) { }
+            @Override public void onTextChanged(CharSequence value,int start,int before,int count) { change.accept(value.toString()); }
+            @Override public void afterTextChanged(android.text.Editable value) { }
+        });
     }
 
     private EditText field(String hint, String value) {
@@ -1881,23 +1971,6 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private void profileDialog() {
-        hideDrawer();
-        if (account == null) return;
-        EditText name = field("Nombre visible", account.optString("displayName"));
-        EditText username = field("@usuario", account.optString("username"));
-        new AlertDialog.Builder(this).setTitle("Editar perfil").setView(form(name, username))
-                .setNegativeButton("Cancelar", null)
-                .setPositiveButton("Guardar", (dialog, which) -> run(() -> {
-                    JSONObject body = new JSONObject()
-                            .put("displayName", name.getText().toString().trim())
-                            .put("username", username.getText().toString().trim())
-                            .put("avatarData", account.optString("avatarData"));
-                    JSONObject result = (JSONObject) api.request("PATCH", "/api/auth/profile", body);
-                    main.post(() -> { account = result.optJSONObject("account"); error("Perfil actualizado."); });
-                })).show();
-    }
-
     private void showPublicProfile(String username) {
         hideDrawer();
         run(() -> {
@@ -1905,23 +1978,14 @@ public final class MainActivity extends Activity {
             JSONObject profile = result.getJSONObject("profile");
             main.post(() -> {
                 if (isFinishing() || isDestroyed()) return;
-                LinearLayout card = column(); card.setPadding(d(24),d(20),d(24),d(20)); card.setGravity(Gravity.CENTER_HORIZONTAL);
-                String name = profile.optString("displayName"), avatar = profile.optString("avatarData"), handle = profile.optString("username");
-                ImageView image = null;
-                if (avatar.isEmpty()) {
-                    TextView fallback = label(name.isEmpty() ? "?" : name.substring(0,1).toUpperCase(Locale.ROOT),44,TEXT,true);
-                    fallback.setGravity(Gravity.CENTER); card.addView(fallback,new LinearLayout.LayoutParams(d(112),d(112)));
-                } else {
-                    image = new ImageView(this); image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                    card.addView(image,new LinearLayout.LayoutParams(d(112),d(112))); trackAnimation(image);
-                }
-                card.addView(label(name,20,TEXT,true)); card.addView(label(handle,14,MUTED,false));
-                AlertDialog.Builder builder = new AlertDialog.Builder(this).setTitle("Perfil").setView(card).setNegativeButton("Cerrar",null);
+                String name = profile.optString("displayName"), handle = profile.optString("username");
+                ScrollView scroll = new ScrollView(this); scroll.setFillViewport(false);
+                scroll.addView(profileCard(profile),new ScrollView.LayoutParams(-1,-2));
+                AlertDialog.Builder builder = new AlertDialog.Builder(this).setView(scroll).setNegativeButton("Cerrar",null);
                 JSONArray list = friends.optJSONArray("friends"); boolean isFriend = false;
                 if (list != null) for (int i=0;i<list.length();i++) { JSONObject friend = list.optJSONObject(i); if (friend != null && handle.equals(friend.optString("username"))) isFriend = true; }
                 if (isFriend) builder.setPositiveButton("Abrir conversación",(dialog,which) -> openRoom(handle,name));
                 AlertDialog dialog = builder.create(); dialog.show(); styleDialog(dialog);
-                if (image != null) { ImageView target = image; target.post(() -> loadImage(target,avatar,384)); }
             });
         });
     }

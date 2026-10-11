@@ -57,7 +57,7 @@ test('GIF profile bytes survive updates, messages and public profiles without ex
   assert.equal(saved.status,200); assert.equal((await saved.json()).account.avatarData,gif);
   const profile = await visitor('/api/profiles/%40alice'); assert.equal(profile.status,200);
   const publicProfile = (await profile.json()).profile;
-  assert.deepEqual(publicProfile,{username:'@alice',displayName:'Alicia',avatarData:gif});
+  assert.deepEqual(publicProfile,{username:'@alice',displayName:'Alicia',avatarData:gif,bannerData:'',bio:''});
   const sent = await alice('/api/messages','POST',{author:'Alicia',text:'GIF de perfil',clientId:crypto.randomUUID()});
   assert.equal(sent.status,201); const message = await sent.json();
   const image = await visitor(message.avatarData);
@@ -68,6 +68,29 @@ test('GIF profile bytes survive updates, messages and public profiles without ex
   const invalid = ['data:image/gif;base64,aGVsbG8=', 'data:image/svg+xml;base64,aGVsbG8=', 'data:image/gif;base64,'+Buffer.alloc(4000001).toString('base64')];
   for (const avatarData of invalid) assert.equal((await alice('/api/auth/profile','PATCH',{displayName:'Alicia',username:'@alice',avatarData})).status,400);
   assert.deepEqual((await (await visitor('/api/profiles/%40alice')).json()).profile,publicProfile);
+});
+
+test('banners and biographies persist, remain public without secrets and survive older clients', async t => {
+  const base = await fixture(t), alice = browser(base), visitor = browser(base);
+  await alice('/api/auth/register','POST',{email:'banner@example.com',username:'banner',password:'password123'});
+  const fields = {displayName:'Mi perfil',username:'@banner',avatarData:''};
+  const bannerData = 'data:image/png;base64,'+png.toString('base64');
+  const bio = 'Me gusta jugar.\nSegunda línea <script>alert(1)</script> 😺';
+  const saved = await alice('/api/auth/profile','PATCH',{...fields,bannerData,bio});
+  assert.equal(saved.status,200); const account = (await saved.json()).account;
+  assert.equal(account.bio,bio); assert.equal(account.bannerData,bannerData);
+  const expected = {username:'@banner',displayName:'Mi perfil',avatarData:'',bannerData,bio};
+  assert.deepEqual((await (await visitor('/api/profiles/%40banner')).json()).profile,expected);
+  assert.equal((await alice('/api/auth/profile','PATCH',fields)).status,200);
+  assert.deepEqual((await (await visitor('/api/profiles/%40banner')).json()).profile,expected);
+  for (const update of [{bio:'x'.repeat(2001)},{bio:{text:'bad'}},{bannerData:'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'},{bannerData:'data:image/png;base64,'+Buffer.alloc(1000001).toString('base64')}]) {
+    assert.equal((await alice('/api/auth/profile','PATCH',{...fields,...update})).status,400);
+    assert.deepEqual((await (await visitor('/api/profiles/%40banner')).json()).profile,expected);
+  }
+  assert.equal((await visitor('/api/auth/profile','PATCH',{...fields,bannerData,bio})).status,401);
+  assert.equal((await alice('/api/auth/profile','PATCH',{...fields,bannerData:'',bio:''})).status,200);
+  const cleared = (await (await visitor('/api/profiles/%40banner')).json()).profile;
+  assert.equal(cleared.bannerData,''); assert.equal(cleared.bio,'');
 });
 
 test('Android binary photos use tiny references and preserve idempotent confirmations', async t => {

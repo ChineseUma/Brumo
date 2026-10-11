@@ -31,7 +31,9 @@ El cliente nativo para teléfono está en [android/](android/). Tiene una sala c
 
 ## Perfiles y notificaciones
 
-En Cuenta puedes elegir un GIF como foto de perfil: conserva la animación, con un máximo de 4 MB y 1024 × 1024 px. También se admiten JPEG, PNG y WebP. Toca el autor de un mensaje registrado o «Perfil» junto a un amigo para ver su foto, nombre visible y @usuario. Los perfiles públicos no incluyen correo ni datos de sesión.
+En el menú derecho puedes editar tu nombre, @usuario y biografía personal de hasta 2000 caracteres, elegir o quitar un banner estático y guardar los cambios. Los banners se preparan a 1200 × 480 px y se guardan con un máximo de 1 MB. El perfil muestra la foto circular superpuesta al banner y una biografía que crece con el texto.
+
+En tu perfil puedes elegir un GIF como foto de perfil: conserva la animación, con un máximo de 4 MB y 1024 × 1024 px. También se admiten JPEG, PNG y WebP. Toca el autor de un mensaje registrado o «Perfil» junto a un amigo para ver su foto, nombre visible y @usuario. Los perfiles públicos no incluyen correo ni datos de sesión.
 
 Activa las notificaciones desde Cuenta. La web muestra avisos de mensajes nuevos y solicitudes de amistad, con contadores por conversación; los avisos del sistema requieren permiso y mantener la página abierta. No avisa por mensajes propios, historial, ediciones ni mensajes de la sala que estás viendo. Android permite recibir avisos al minimizar la app mediante una conexión en segundo plano con una notificación permanente. Ambos clientes necesitan conexión con el servidor; no hay servicio de push para avisar después de forzar el cierre.
 

@@ -33,6 +33,10 @@ const changeAvatar = document.querySelector('#change-avatar');
 const saveProfile = document.querySelector('#save-profile');
 const profileAvatarPreview = document.querySelector('#profile-avatar-preview');
 const profileUsernameInput = document.querySelector('#profile-username');
+const profileBioInput = document.querySelector('#profile-bio');
+const bannerInput = document.querySelector('#profile-banner-input');
+const profileStatus = document.querySelector('#profile-status');
+let draftBannerData = '';
 const textInput = document.querySelector('#text');
 const imageInput = document.querySelector('#image');
 const audioFileInput = document.querySelector('#audio-file');
@@ -118,7 +122,7 @@ function setMobileDrawer(panel = '') {
   friendsStrip.inert = mobileLayout.matches && next !== 'nav';
   sidePanel.inert = mobileLayout.matches && next !== 'info';
   if (next !== 'nav') friendsMenu.hidden = true;
-  if (next) profileMenu.hidden = true;
+  if (next && next !== 'info') profileMenu.hidden = true;
 }
 
 mobileNavToggle.addEventListener('click', () => setMobileDrawer(document.body.dataset.mobileDrawer === 'nav' ? '' : 'nav'));
@@ -284,6 +288,7 @@ incomingRequests.addEventListener('click', async event => {
 function showAccount(account) {
   if (activeAccount?.email !== account?.email) { notices.reset(); notificationToast.hidden = true; refreshNoticeBadges(); }
   activeAccount = account;
+  if (!account) { profileBioInput.value = ''; draftBannerData = ''; updateProfileCard(); }
   const loggedIn = Boolean(account);
   accountEmail.hidden = loggedIn;
   accountUsername.hidden = loggedIn;
@@ -296,6 +301,9 @@ function showAccount(account) {
   if (loggedIn) {
     authorInput.value = account.displayName || account.email.split('@')[0];
     profileUsernameInput.value = account.username || '';
+    profileBioInput.value = account.bio || '';
+    draftBannerData = account.bannerData || '';
+    updateProfileCard();
     saveNameCookie(authorInput.value);
     avatarData = account.avatarData || '';
     draftAvatarData = avatarData;
@@ -585,13 +593,18 @@ messagesElement.addEventListener('click', event => {
   if (id && outbox.has(id)) transmit(outbox.get(id));
 });
 
-avatarPicker.addEventListener('click', () => { profileMenu.hidden = !profileMenu.hidden; });
+function openProfileEditor() {
+  setMobileDrawer('info'); profileMenu.hidden = false;
+  profileMenu.scrollIntoView({block:'nearest'}); updateProfileCard();
+}
+avatarPicker.addEventListener('click', openProfileEditor);
+document.querySelector('#edit-profile').addEventListener('click',openProfileEditor);
 closeProfile.addEventListener('click', () => { profileMenu.hidden = true; });
 changeAvatar.addEventListener('click', () => avatarInput.click());
 
 avatarInput.addEventListener('change', async () => {
   if (!activeAccount) {
-    imageStatus.textContent = 'Inicia sesión para usar una foto de perfil.';
+    profileStatus.textContent = 'Inicia sesión para usar una foto de perfil.';
     avatarInput.value = '';
     return;
   }
@@ -599,15 +612,15 @@ avatarInput.addEventListener('change', async () => {
   avatarInput.value = '';
   if (!file) return;
   if (file.size > 4_000_000) {
-    imageStatus.textContent = 'La foto de perfil debe pesar como máximo 4 MB.';
+    profileStatus.textContent = 'La foto de perfil debe pesar como máximo 4 MB.';
     return;
   }
   try {
     draftAvatarData = await prepareAvatar(file);
     updateAvatarPreview(draftAvatarData);
-    imageStatus.textContent = 'Foto lista. Pulsa “Guardar cambios” en tu perfil.';
+    profileStatus.textContent = 'Foto lista. Pulsa “Guardar cambios” en tu perfil.';
   } catch (error) {
-    imageStatus.textContent = error.message || 'No se pudo preparar la foto de perfil.';
+    profileStatus.textContent = error.message || 'No se pudo preparar la foto de perfil.';
   }
 });
 
@@ -619,27 +632,30 @@ saveProfile.addEventListener('click', async () => {
   }
   if (!activeAccount) {
     saveNameCookie(name);
-    profileMenu.hidden = true;
-    imageStatus.textContent = 'Los invitados no pueden guardar una foto de perfil.';
+    updateProfileCard();
+  profileStatus.textContent = 'Perfil guardado.';
+    profileStatus.textContent = 'Los invitados no pueden guardar una foto de perfil.';
     return;
   }
   const username = profileUsernameInput.value.trim();
   if (!/^@[a-zA-Z0-9_]{3,20}$/.test(username)) {
     profileUsernameInput.focus();
-    imageStatus.textContent = 'El usuario debe empezar con @ y tener entre 3 y 20 caracteres.';
+    profileStatus.textContent = 'El usuario debe empezar con @ y tener entre 3 y 20 caracteres.';
     return;
   }
   const response = await apiFetch('/api/auth/profile', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ displayName: name, username, avatarData: draftAvatarData })
+    body: JSON.stringify({ displayName: name, username, avatarData: draftAvatarData, bannerData: draftBannerData, bio: profileBioInput.value })
   });
   const result = await response.json();
   if (!response.ok) {
-    imageStatus.textContent = result.error || 'No se pudo actualizar el perfil.';
+    profileStatus.textContent = result.error || 'No se pudo actualizar el perfil.';
     return;
   }
   activeAccount = result.account;
+  profileBioInput.value = result.account.bio || '';
+  draftBannerData = result.account.bannerData || '';
   authorInput.value = result.account.displayName;
   profileUsernameInput.value = result.account.username;
   avatarData = result.account.avatarData || '';
@@ -647,8 +663,9 @@ saveProfile.addEventListener('click', async () => {
   saveNameCookie(authorInput.value);
   localStorage.setItem('bruma-avatar', avatarData);
   updateAvatarPreview(avatarData);
-  profileMenu.hidden = true;
-  imageStatus.textContent = 'Perfil actualizado.';
+  updateProfileCard();
+  profileStatus.textContent = 'Perfil guardado.';
+  profileStatus.textContent = 'Perfil actualizado.';
   loadFriends().catch(() => {});
 });
 
@@ -1070,6 +1087,7 @@ async function viewProfile(username) {
   const avatar = document.querySelector('#public-profile-avatar');
   const status = document.querySelector('#public-profile-status');
   const chat = document.querySelector('#public-profile-chat');
+  renderBanner(document.querySelector('#public-profile-banner'),''); document.querySelector('#public-profile-bio').hidden = true;
   viewedProfile = null; name.textContent = ''; handle.textContent = ''; avatar.textContent = '?'; avatar.classList.add('profile-fallback'); chat.hidden = true; status.textContent = 'Cargando perfil…';
   if (!publicProfileDialog.open) publicProfileDialog.showModal();
   try {
@@ -1078,6 +1096,8 @@ async function viewProfile(username) {
     if (generation !== profileRequestGeneration || !publicProfileDialog.open) return;
     if (!response.ok) { status.textContent = result.error || 'No se pudo abrir el perfil.'; return; }
     const profile = result.profile; viewedProfile = profile;
+    renderBanner(document.querySelector('#public-profile-banner'),profile.bannerData);
+    const bio = document.querySelector('#public-profile-bio'); bio.textContent = profile.bio || ''; bio.hidden = !profile.bio;
     name.textContent = profile.displayName; handle.textContent = profile.username; status.textContent = '';
     avatar.textContent = (profile.displayName || '?').slice(0,1).toUpperCase();
     if (profile.avatarData) { const image = document.createElement('img'); image.src = profile.avatarData; image.alt = `Foto de ${profile.displayName}`; avatar.replaceChildren(image); avatar.classList.remove('profile-fallback'); }
@@ -1135,3 +1155,49 @@ updateAvatarPreview(avatarData);
 updateGifPanel();
 updateCleanupClock();
 setInterval(updateCleanupClock, 30_000);
+
+function renderBanner(target,data) {
+  target.replaceChildren();
+  if (data) { const img = document.createElement('img'); img.src = data; img.alt = 'Banner del perfil'; target.append(img); }
+}
+function updateProfileCard() {
+  renderBanner(document.querySelector('#profile-banner-preview'),draftBannerData);
+  document.querySelector('#profile-name-preview').textContent = authorInput.value || 'Tu nombre';
+  document.querySelector('#profile-handle-preview').textContent = profileUsernameInput.value || '@usuario';
+  const bio = document.querySelector('#profile-bio-preview'); bio.textContent = profileBioInput.value; bio.hidden = !profileBioInput.value;
+  document.querySelector('#bio-count').textContent = `${profileBioInput.value.length} / 2000`;
+}
+for (const input of [authorInput,profileUsernameInput,profileBioInput]) input.addEventListener('input',updateProfileCard);
+document.querySelector('#change-banner').addEventListener('click',() => bannerInput.click());
+document.querySelector('#remove-banner').addEventListener('click',() => { draftBannerData = ''; updateProfileCard(); profileStatus.textContent = 'Pulsa Guardar cambios para quitar el banner.'; });
+bannerInput.addEventListener('change',async () => {
+  const file = bannerInput.files[0]; bannerInput.value = '';
+  if (!file) return;
+  if (!activeAccount) { profileStatus.textContent = 'Inicia sesión para editar tu banner.'; return; }
+  try { draftBannerData = await prepareBanner(file); updateProfileCard(); profileStatus.textContent = 'Banner listo. Pulsa Guardar cambios.'; }
+  catch(error) { profileStatus.textContent = error.message; }
+});
+async function prepareBanner(file) {
+  if (file.size > 10_000_000) throw new Error('El archivo del banner supera 10 MB.');
+  const prefix = new Uint8Array(await file.slice(0,6).arrayBuffer());
+  if (String.fromCharCode(...prefix).match(/^GIF8[79]a$/)) throw new Error('Elige un banner estático PNG, JPEG o WebP.');
+  return new Promise((resolve,reject) => {
+    const image = new Image(), url = URL.createObjectURL(file);
+    image.onload = () => {
+      try {
+        const canvas = document.createElement('canvas'); canvas.width = 1200; canvas.height = 480;
+        const ctx = canvas.getContext('2d');
+        const scale = Math.max(canvas.width/image.naturalWidth,canvas.height/image.naturalHeight);
+        const w = image.naturalWidth*scale, h = image.naturalHeight*scale;
+        ctx.drawImage(image,(canvas.width-w)/2,(canvas.height-h)/2,w,h);
+        let data = canvas.toDataURL('image/jpeg',0.85);
+        if (data.length > 1_333_360) data = canvas.toDataURL('image/jpeg',0.65);
+        if (data.length > 1_333_360) throw new Error('El banner preparado supera 1 MB. Elige otra imagen.');
+        resolve(data);
+      } catch(error) { reject(error); } finally { URL.revokeObjectURL(url); }
+    };
+    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error('No se pudo leer el banner. Elige PNG, JPEG o WebP.')); };
+    image.src = url;
+  });
+}
+updateProfileCard();

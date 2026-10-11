@@ -30,19 +30,6 @@
           </div>
         </header>
 
-        <div id="profile-menu" class="profile-menu" hidden>
-          <div class="profile-menu-heading"><strong>Tu perfil</strong><button id="close-profile" type="button" aria-label="Cerrar menú">×</button></div>
-          <div id="profile-avatar-preview" class="profile-avatar profile-preview profile-fallback" aria-hidden="true">?</div>
-          <button id="change-avatar" class="profile-action" type="button">Cambiar foto</button>
-          <small>GIF animado: hasta 4 MB y 1024 × 1024 px.</small>
-          <label for="author">Nombre visible</label>
-          <input id="author" maxlength="30" placeholder="Tu nombre" autocomplete="nickname" required />
-          <label for="profile-username">Nombre de usuario</label>
-          <input id="profile-username" maxlength="21" placeholder="@usuario" autocomplete="username" required />
-          <button id="save-profile" class="save-profile" type="button">Guardar cambios</button>
-          <button id="toggle-notifications" class="profile-action" type="button">Activar notificaciones</button>
-          <small id="notification-status" role="status"></small>
-        </div>
 
         <div id="friends-menu" class="friends-menu" hidden>
           <div class="profile-menu-heading"><strong>Amigos</strong><button id="close-friends" type="button" aria-label="Cerrar amigos">×</button></div>
@@ -140,6 +127,37 @@
       <aside class="side-panel" id="info-panel" aria-label="Información de la sala">
         <div class="mobile-drawer-heading"><strong>Información</strong><button id="mobile-info-close" type="button" aria-label="Cerrar información">×</button></div>
         <div class="side-brand">Bruma</div>
+        <button id="edit-profile" class="profile-action" type="button">Editar mi perfil</button>
+        <div id="profile-menu" class="profile-menu" hidden>
+          <div class="profile-menu-heading"><strong>Tu perfil</strong><button id="close-profile" type="button" aria-label="Cerrar menú">×</button></div>
+          <div class="profile-card">
+            <div id="profile-banner-preview" class="profile-banner"></div>
+            <div class="profile-card-body">
+              <div id="profile-avatar-preview" class="profile-avatar profile-preview profile-fallback" aria-hidden="true">?</div>
+              <strong id="profile-name-preview" class="profile-display-name"></strong>
+              <p id="profile-handle-preview" class="profile-handle"></p>
+              <p id="profile-bio-preview" class="profile-bio" hidden></p>
+            </div>
+          </div>
+          <button id="change-avatar" class="profile-action" type="button">Cambiar foto</button>
+          <small>GIF animado: hasta 4 MB y 1024 × 1024 px.</small>
+          <label for="author">Nombre visible</label>
+          <input id="author" maxlength="30" placeholder="Tu nombre" autocomplete="nickname" required />
+          <label for="profile-username">Nombre de usuario</label>
+          <input id="profile-username" maxlength="21" placeholder="@usuario" autocomplete="username" required />
+          <label for="profile-bio">Biografía personal</label>
+          <textarea id="profile-bio" maxlength="2000" rows="4" placeholder="Cuéntanos algo sobre ti..."></textarea>
+          <small id="bio-count">0 / 2000</small>
+          <input id="profile-banner-input" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+          <button id="change-banner" class="profile-action" type="button">Cambiar banner</button>
+          <button id="remove-banner" class="profile-action" type="button">Quitar banner</button>
+          <small>El banner se guarda como imagen estática. Hasta 1 MB al prepararlo.</small>
+          <p id="profile-status" role="status"></p>
+          <button id="save-profile" class="save-profile" type="button">Guardar cambios</button>
+          <button id="toggle-notifications" class="profile-action" type="button">Activar notificaciones</button>
+          <small id="notification-status" role="status"></small>
+        </div>
+
         <div class="side-divider"></div>
         <p class="side-label">SALA ACTUAL</p>
         <h3 id="side-room-title">Sala del grupo</h3>
@@ -151,14 +169,17 @@
       </aside>
       <button id="mobile-drawer-backdrop" class="mobile-drawer-backdrop" type="button" aria-label="Cerrar panel" hidden></button>
     </main>
-    <dialog id="public-profile" aria-labelledby="public-profile-title">
+    <dialog id="public-profile" aria-labelledby="public-profile-name">
       <button id="close-public-profile" type="button" aria-label="Cerrar perfil">×</button>
-      <h2 id="public-profile-title">Perfil</h2>
-      <div id="public-profile-avatar" class="profile-avatar profile-preview profile-fallback"></div>
-      <strong id="public-profile-name"></strong>
-      <p id="public-profile-username"></p>
-      <p id="public-profile-status" role="status"></p>
-      <button id="public-profile-chat" class="profile-action" type="button" hidden>Abrir conversación</button>
+      <div id="public-profile-banner" class="profile-banner"></div>
+      <div class="profile-card-body">
+        <div id="public-profile-avatar" class="profile-avatar profile-preview profile-fallback"></div>
+        <strong id="public-profile-name" class="profile-display-name"></strong>
+        <p id="public-profile-username" class="profile-handle"></p>
+        <p id="public-profile-bio" class="profile-bio" hidden></p>
+        <p id="public-profile-status" role="status"></p>
+        <button id="public-profile-chat" class="profile-action" type="button" hidden>Abrir conversación</button>
+      </div>
     </dialog>
     <button id="notification-toast" type="button" role="status" hidden></button>
     <script src="/notifications.js"></script>

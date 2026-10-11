@@ -45,3 +45,13 @@ En ⓘ puedes activar o desactivar los avisos. Tocarlos abre la sala, conversaci
 El límite de las fotos de perfil pasa de 280 KB a 4 MB, también en el servidor y la web. Los GIF conservan sus bytes y admiten hasta 1024 × 1024 px. Android identifica el formato mediante la firma del archivo, incluso si el selector devuelve un tipo MIME genérico, y prepara las fotos estáticas a un máximo de 256 px. Los GIF y WebP animados conservan su animación. Al ampliar un GIF de perfil se utiliza el drawable animado en lugar de convertirlo a bitmap.
 
 Instala el APK nuevo y actualiza/reinicia el servidor con estos cambios: el APK por sí solo no modifica los límites de un servidor anterior. Versión 0.2.7, código 11. Las pruebas cubren un GIF mayor a 280 KB, bytes idénticos tras guardar/descargar, padding de GIF y MIME genérico; queda pendiente la prueba de carga en un teléfono real.
+
+## Permiso de notificaciones al primer inicio 0.2.8
+
+En una instalación nueva, el primer inicio solicita el permiso de notificaciones en Android 13 o posterior. Al aceptarlo se activa la conexión para recibir avisos; al denegarlo o cerrar la solicitud, el chat sigue funcionando sin avisos. La solicitud inicial no se repite al volver a abrir la app o girar la pantalla. Puedes cambiar la opción desde ⓘ. En Android 8–12 no existe este permiso en tiempo de ejecución y los avisos se activan en el primer inicio. Las actualizaciones conservan una elección de notificaciones ya guardada. Versión 0.2.8, código 12.
+
+## Diseño de perfiles 0.2.9
+
+Los perfiles muestran banner estático, foto circular superpuesta, nombre visible, @usuario y biografía con altura según el texto. Desde ⓘ se editan el nombre, usuario y biografía (hasta 2000 caracteres), se prepara o quita el banner y se guarda el perfil. Los banners se recortan a 1200 × 480 px y JPEG estático de hasta 1 MB; se admite una imagen original de hasta 10 MB. La foto de perfil conserva los GIF animados.
+
+Los perfiles antiguos tienen banner predeterminado y biografía vacía. Guardar desde una app anterior conserva ambos campos. Se mantiene la solicitud de permiso de notificaciones al primer inicio. Versión 0.2.9, código 13.

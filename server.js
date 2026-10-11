@@ -7,6 +7,7 @@ const { URL } = require('url');
 const { createGunzip } = require('node:zlib');
 const { MessageStore } = require('./lib/message-store');
 const { validAvatar } = require('./lib/avatar');
+const { validBanner, MAX_BIO_LENGTH } = require('./lib/profile');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -160,7 +161,7 @@ function visibleMessages(guestId, accountId) {
 }
 
 function publicAccount(account) {
-  return account ? { email: account.email, username: account.username || '', displayName: account.displayName || '', avatarData: account.avatarData || '' } : null;
+  return account ? { email: account.email, ...publicProfile(account) } : null;
 }
 
 function normalizeUsername(value) {
@@ -178,6 +179,10 @@ function usernameTaken(username, exceptId = '') {
 
 function publicFriend(account) {
   return { username: account.username, displayName: account.displayName || 'Usuario', avatarData: account.avatarData || '' };
+}
+
+function publicProfile(account) {
+  return {...publicFriend(account), bannerData: account.bannerData || '', bio: account.bio || ''};
 }
 
 function conversationKey(firstId, secondId) {
@@ -579,7 +584,7 @@ async function handleRequest(req, res) {
     if (!validUsername(username)) return sendJson(res, 400, {error: 'Nombre de usuario inválido.'});
     const profile = accounts.find(item => item.username === username);
     if (!profile) return sendJson(res, 404, {error: 'Perfil no encontrado.'});
-    return sendJson(res, 200, {profile: publicFriend(profile)});
+    return sendJson(res, 200, {profile: publicProfile(profile)});
   }
 
   if (url.pathname.startsWith('/api/friends')) {
@@ -765,13 +770,19 @@ async function handleRequest(req, res) {
       const username = normalizeUsername(data.username);
       const avatarData = String(data.avatarData || '');
       const avatarIsValid = validAvatar(avatarData);
+      const bannerData = data.bannerData === undefined ? (account.bannerData || '') : data.bannerData;
+      const bio = data.bio === undefined ? (account.bio || '') : data.bio;
       if (!displayName) return sendJson(res, 400, { error: 'El nombre no puede estar vacío.' });
       if (!validUsername(username)) return sendJson(res, 400, { error: 'El usuario debe tener entre 3 y 20 caracteres: letras, números o _. Siempre empieza con @.' });
       if (usernameTaken(username, account.id)) return sendJson(res, 409, { error: 'Ese nombre de usuario ya está ocupado.' });
       if (!avatarIsValid) return sendJson(res, 400, { error: 'La foto debe ser PNG, JPEG, WebP o GIF y pesar como máximo 4 MB. Los GIF admiten hasta 1024 × 1024 px.' });
+      if (!validBanner(bannerData)) return sendJson(res, 400, { error: 'El banner debe ser una imagen estática PNG, JPEG o WebP de hasta 1 MB.' });
+      if (typeof bio !== 'string' || bio.length > MAX_BIO_LENGTH) return sendJson(res, 400, { error: 'La biografía debe tener como máximo 2000 caracteres.' });
       account.displayName = displayName;
       account.username = username;
       account.avatarData = avatarData;
+      account.bannerData = bannerData;
+      account.bio = bio.trim();
       saveAccounts();
       return sendJson(res, 200, { account: publicAccount(account) });
     } catch {

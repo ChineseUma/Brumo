@@ -768,7 +768,7 @@ async function handleRequest(req, res) {
       if (!displayName) return sendJson(res, 400, { error: 'El nombre no puede estar vacío.' });
       if (!validUsername(username)) return sendJson(res, 400, { error: 'El usuario debe tener entre 3 y 20 caracteres: letras, números o _. Siempre empieza con @.' });
       if (usernameTaken(username, account.id)) return sendJson(res, 409, { error: 'Ese nombre de usuario ya está ocupado.' });
-      if (!avatarIsValid) return sendJson(res, 400, { error: 'La foto debe ser PNG, JPEG, WebP o GIF y pesar como máximo 280 KB. Los GIF admiten hasta 1024 × 1024 px.' });
+      if (!avatarIsValid) return sendJson(res, 400, { error: 'La foto debe ser PNG, JPEG, WebP o GIF y pesar como máximo 4 MB. Los GIF admiten hasta 1024 × 1024 px.' });
       account.displayName = displayName;
       account.username = username;
       account.avatarData = avatarData;
@@ -828,7 +828,7 @@ async function handleRequest(req, res) {
         .map(file => ({ id: file.id, token: uploads[file.id].token || '', name: uploads[file.id].name, type: uploads[file.id].type, size: uploads[file.id].size }));
       if (files.length !== requestedFiles.length) return sendJson(res, 400, { error: 'Uno de los archivos ya no está disponible.' });
       if (!author || (!text && !validImage && !validAudio && !validGif && !files.length)) return sendJson(res, 400, { error: 'Escribe un mensaje, selecciona una imagen, un GIF, un audio o un archivo.' });
-      if (!avatarIsValid) return sendJson(res, 400, { error: 'La foto de perfil no es válida o supera 280 KB.' });
+      if (!avatarIsValid) return sendJson(res, 400, { error: 'La foto de perfil no es válida o supera 4 MB.' });
       const effectiveAuthor = account ? account.displayName : author;
       const effectiveAvatar = account ? (account.avatarData || '') : avatarData;
       const message = { id: crypto.randomUUID(), clientId: clientMessageId(data), author: effectiveAuthor, text, isAccount: Boolean(account), createdAt: Date.now() };

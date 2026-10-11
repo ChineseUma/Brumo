@@ -48,7 +48,11 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 test('GIF profile bytes survive updates, messages and public profiles without exposing account secrets', async t => {
   const base = await fixture(t), alice = browser(base), visitor = browser(base);
   await alice('/api/auth/register','POST',{email:'alice@example.com',username:'alice',password:'password123'});
-  const gif = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  const original = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7','base64');
+  const comments = Array.from({length:1200},()=>Buffer.concat([Buffer.from([255]),Buffer.alloc(255,65)]));
+  const bytes = Buffer.concat([original.subarray(0,-1),Buffer.from([0x21,0xfe]),...comments,Buffer.from([0,0x3b]),Buffer.alloc(8)]);
+  assert.ok(bytes.length > 280000);
+  const gif = 'data:image/gif;base64,'+bytes.toString('base64');
   const saved = await alice('/api/auth/profile','PATCH',{displayName:'Alicia',username:'@alice',avatarData:gif});
   assert.equal(saved.status,200); assert.equal((await saved.json()).account.avatarData,gif);
   const profile = await visitor('/api/profiles/%40alice'); assert.equal(profile.status,200);
@@ -61,7 +65,7 @@ test('GIF profile bytes survive updates, messages and public profiles without ex
   assert.deepEqual(Buffer.from(await image.arrayBuffer()),Buffer.from(gif.split(',')[1],'base64'));
   assert.equal((await visitor('/api/auth/profile','PATCH',{displayName:'Hack',username:'@alice',avatarData:gif})).status,401);
   assert.equal((await visitor('/api/profiles/%40missing')).status,404);
-  const invalid = ['data:image/gif;base64,aGVsbG8=', 'data:image/svg+xml;base64,aGVsbG8=', 'data:image/gif;base64,'+Buffer.alloc(280001).toString('base64')];
+  const invalid = ['data:image/gif;base64,aGVsbG8=', 'data:image/svg+xml;base64,aGVsbG8=', 'data:image/gif;base64,'+Buffer.alloc(4000001).toString('base64')];
   for (const avatarData of invalid) assert.equal((await alice('/api/auth/profile','PATCH',{displayName:'Alicia',username:'@alice',avatarData})).status,400);
   assert.deepEqual((await (await visitor('/api/profiles/%40alice')).json()).profile,publicProfile);
 });

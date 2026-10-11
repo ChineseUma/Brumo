@@ -36,6 +36,12 @@ La versión release reduce código y recursos con R8. Revisa [OPTIMIZACION_ANDRO
 
 ## Perfiles y avisos 0.2.6
 
-Las fotos de perfil admiten GIF animado de hasta 280 KB y 1024 × 1024 px, conservando sus fotogramas. Toca el autor registrado de un mensaje o «Ver perfil» en conversaciones para consultar foto, nombre visible y @usuario. El correo permanece privado.
+Las fotos de perfil admiten GIF animado de hasta 4 MB y 1024 × 1024 px, conservando sus fotogramas. Toca el autor registrado de un mensaje o «Ver perfil» en conversaciones para consultar foto, nombre visible y @usuario. El correo permanece privado.
 
 En ⓘ puedes activar o desactivar los avisos. Tocarlos abre la sala, conversación privada o solicitudes correspondientes. Los mensajes propios, el historial al reconectar y los mensajes de la conversación visible no generan avisos. La conexión de notificaciones consume red y puede ser detenida por Android o por el usuario; no utiliza Firebase ni requiere claves externas. La versión es 0.2.6, código 10.
+
+## Corrección de fotos de perfil 0.2.7
+
+El límite de las fotos de perfil pasa de 280 KB a 4 MB, también en el servidor y la web. Los GIF conservan sus bytes y admiten hasta 1024 × 1024 px. Android identifica el formato mediante la firma del archivo, incluso si el selector devuelve un tipo MIME genérico, y prepara las fotos estáticas a un máximo de 256 px. Los GIF y WebP animados conservan su animación. Al ampliar un GIF de perfil se utiliza el drawable animado en lugar de convertirlo a bitmap.
+
+Instala el APK nuevo y actualiza/reinicia el servidor con estos cambios: el APK por sí solo no modifica los límites de un servidor anterior. Versión 0.2.7, código 11. Las pruebas cubren un GIF mayor a 280 KB, bytes idénticos tras guardar/descargar, padding de GIF y MIME genérico; queda pendiente la prueba de carga en un teléfono real.

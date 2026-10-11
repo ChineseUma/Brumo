@@ -1599,7 +1599,7 @@ public final class MainActivity extends Activity {
             });
             return;
         }
-        if (type == null || !isImageType(type)) {
+        if (!avatar && (type == null || !isImageType(type))) {
             error("Usa una imagen PNG, JPEG, WebP o GIF.");
             return;
         }
@@ -1629,19 +1629,9 @@ public final class MainActivity extends Activity {
             return;
         }
         preparationIo.execute(() -> {
-            try (InputStream input = getContentResolver().openInputStream(uri); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-                if (input == null) throw new Exception("No se pudo abrir la imagen.");
-                byte[] buffer = new byte[8192];
-                int count;
-                int max = avatar ? 280_000 : 10_000_000;
-                while ((count = input.read(buffer)) != -1) {
-                    output.write(buffer, 0, count);
-                    if (output.size() > max) throw new Exception(avatar ? "La foto de perfil debe ser menor a 280 KB." : "La imagen debe ser menor a 4 MB.");
-                }
-                String encoded = "data:" + type + ";base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
-                main.post(() -> {
-                    if (!isDestroyed()) saveAvatar(encoded);
-                });
+            try {
+                String encoded = AvatarPreparer.prepare(this,uri);
+                main.post(() -> { if (!isDestroyed()) saveAvatar(encoded); });
             } catch (Exception failure) { main.post(() -> error(failure.getMessage())); }
         });
     }
@@ -1757,7 +1747,7 @@ public final class MainActivity extends Activity {
             drawerItem("Iniciar sesión / crear cuenta", "Guarda tu perfil y habla en privado", this::accountDialog);
         } else {
             drawerItem(account.optString("displayName"), account.optString("username"), this::profileDialog);
-            drawerItem("Cambiar foto de perfil", "PNG, JPEG, WebP o GIF · hasta 280 KB", () -> {
+            drawerItem("Cambiar foto de perfil", "PNG, JPEG, WebP o GIF · hasta 4 MB", () -> {
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                 intent.setType("image/*");
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -1793,10 +1783,9 @@ public final class MainActivity extends Activity {
             card.addView(image, new LinearLayout.LayoutParams(d(112), d(112)));
             trackAnimation(image); image.post(() -> loadImage(image,avatar,384));
             image.setOnClickListener(v -> {
-                mediaIo.execute(() -> {
-                    Bitmap result = bitmap(avatar, 1200);
-                    main.post(() -> { if (result != null) showImageViewer(resultDrawable(result)); });
-                });
+                Drawable shown = image.getDrawable();
+                if (shown != null && shown.getConstantState() != null) shown = shown.getConstantState().newDrawable();
+                showImageViewer(shown);
             });
         }
         TextView displayName = label(name, 17, TEXT, true);

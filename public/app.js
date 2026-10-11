@@ -598,8 +598,8 @@ avatarInput.addEventListener('change', async () => {
   const file = avatarInput.files[0];
   avatarInput.value = '';
   if (!file) return;
-  if (file.size > 4 * 1024 * 1024) {
-    imageStatus.textContent = 'La foto de perfil debe pesar menos de 4 MB.';
+  if (file.size > 4_000_000) {
+    imageStatus.textContent = 'La foto de perfil debe pesar como máximo 4 MB.';
     return;
   }
   try {
@@ -664,10 +664,13 @@ function updateAvatarPreview(data) {
   }
 }
 
-function prepareAvatar(file) {
-  if (file.type === 'image/gif') {
-    if (file.size > 280_000) return Promise.reject(new Error('El GIF de perfil debe pesar como máximo 280 KB.'));
-    return readFileAsDataUrl(file); // Preserve every animation frame; never rasterize a GIF to canvas.
+async function prepareAvatar(file) {
+  const signature = new Uint8Array(await file.slice(0,6).arrayBuffer());
+  const isGif = signature.length === 6 && String.fromCharCode(...signature).match(/^GIF8[79]a$/);
+  if (isGif) {
+    if (file.size > 4_000_000) return Promise.reject(new Error('El GIF de perfil debe pesar como máximo 4 MB.'));
+    const dataUrl = await readFileAsDataUrl(file);
+    return 'data:image/gif;base64,' + dataUrl.slice(dataUrl.indexOf(',') + 1); // Preserve frames and normalize picker MIME.
   }
   return new Promise((resolve, reject) => {
     const image = new Image();

@@ -141,6 +141,13 @@ test('propiedad de mensajes y privacidad de eventos', async t => {
   streams = await Promise.all([alice.events(true), bob.events(true), carol.events(true), guest.events(true)]);
   streams.push(await guest.events());
   await waitFor(() => streams.every(stream => stream.received.some(event => event.type === 'messages')));
+  // Friend notifications are delivered only to the recipient, with public profile fields.
+  assert.equal((await carol.request('/api/friends/requests','POST',{username:'@bob'})).status,201);
+  await waitFor(() => streams[1].received.some(event => event.type === 'friend-request'));
+  const friendNotice = streams[1].received.find(event => event.type === 'friend-request');
+  assert.deepEqual(Object.keys(friendNotice.data.from).sort(),['avatarData','displayName','username']);
+  assert.equal(friendNotice.data.from.username,'@carol');
+  for (const index of [0,2,3,4]) assert.equal(streams[index].received.some(event => event.type === 'friend-request'),false);
   const newGroupMessage = await alice.request('/api/messages', 'POST', { author: 'fake', text: 'solo el cambio' });
   assert.equal(newGroupMessage.status, 201);
   await waitFor(() => streams.every(stream => stream.received.some(event => event.type === 'message-created' || event.type === 'messages' && event.data.some(item => item.id === newGroupMessage.data.id))));
@@ -161,6 +168,8 @@ test('propiedad de mensajes y privacidad de eventos', async t => {
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.equal(streams[0].received.find(event => event.type === 'private-created').data.friendUsername, '@bob');
   assert.equal(streams[1].received.find(event => event.type === 'private-created').data.friendUsername, '@alice');
+  assert.equal(streams[0].received.find(event => event.type === 'private-created').data.isOwn,true);
+  assert.equal(streams[1].received.find(event => event.type === 'private-created').data.isOwn,false);
   assert.equal(streams[2].received.some(event => event.type === 'private-created'), false);
   assert.equal(streams[3].received.some(event => event.type === 'private-created'), false);
   assert.equal(streams[4].received.some(event => event.type === 'private'), false);

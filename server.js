@@ -6,6 +6,7 @@ const { promisify } = require('util');
 const { URL } = require('url');
 const { createGunzip } = require('node:zlib');
 const { MessageStore } = require('./lib/message-store');
+const { validAvatar } = require('./lib/avatar');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -295,7 +296,7 @@ function broadcastPrivateCreated(first, second, message, conversation) {
     const accountId = sessionAccount(client.sessionId);
     if (accountId !== first.id && accountId !== second.id) continue;
     const friend = accountId === first.id ? second : first;
-    const common = {friendUsername: friend.username, friendDisplayName: friend.displayName || 'Usuario'};
+    const common = {friendUsername: friend.username, friendDisplayName: friend.displayName || 'Usuario', isOwn: accountId === first.id};
     deliver(client, client.delta ? 'private-created' : 'private', client.delta ? {...common, message} : {...common, messages: conversation});
   }
 }
@@ -526,6 +527,7 @@ async function handleRequest(req, res) {
     res.writeHead(200, {
       'Content-Type': upload.type || 'application/octet-stream',
       'Content-Length': upload.size,
+      'Cache-Control': upload.token && url.searchParams.get('token') === upload.token ? 'private, max-age=86400' : 'no-store',
       'X-Content-Type-Options': 'nosniff',
       'Content-Disposition': `attachment; filename="${upload.name.replace(/[^a-zA-Z0-9._-]/g, '_')}"`
     });
@@ -570,6 +572,16 @@ async function handleRequest(req, res) {
     }
   }
 
+  if (req.method === 'GET' && url.pathname.startsWith('/api/profiles/')) {
+    let username;
+    try { username = normalizeUsername(decodeURIComponent(url.pathname.slice('/api/profiles/'.length))); }
+    catch { return sendJson(res, 400, {error: 'Perfil inválido.'}); }
+    if (!validUsername(username)) return sendJson(res, 400, {error: 'Nombre de usuario inválido.'});
+    const profile = accounts.find(item => item.username === username);
+    if (!profile) return sendJson(res, 404, {error: 'Perfil no encontrado.'});
+    return sendJson(res, 200, {profile: publicFriend(profile)});
+  }
+
   if (url.pathname.startsWith('/api/friends')) {
     const account = currentAccount(req);
     if (!account) return sendJson(res, 401, { error: 'Inicia sesión para usar amistades.' });
@@ -608,9 +620,13 @@ async function handleRequest(req, res) {
         if (friendRequests.some(request => request.status === 'pending' && request.fromId === account.id && request.toId === target.id)) {
           return sendJson(res, 409, { error: 'Ya enviaste una solicitud a esa persona.' });
         }
-        friendRequests.push({ id: crypto.randomUUID(), fromId: account.id, toId: target.id, status: 'pending', createdAt: Date.now() });
+        const request = { id: crypto.randomUUID(), fromId: account.id, toId: target.id, status: 'pending', createdAt: Date.now() };
+        friendRequests.push(request);
         saveFriendRequests();
         broadcast('friends', { accountIds: [account.id, target.id] });
+        for (const client of clients) if (sessionAccount(client.sessionId) === target.id) {
+          deliver(client, 'friend-request', {id: request.id, from: publicFriend(account)});
+        }
         return sendJson(res, 201, { ok: true });
       } catch {
         return sendJson(res, 400, { error: 'Solicitud inválida.' });
@@ -748,11 +764,11 @@ async function handleRequest(req, res) {
       const displayName = String(data.displayName || '').trim().slice(0, 30);
       const username = normalizeUsername(data.username);
       const avatarData = String(data.avatarData || '');
-      const validAvatar = !avatarData || /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(avatarData) && avatarData.length <= 400_000;
+      const avatarIsValid = validAvatar(avatarData);
       if (!displayName) return sendJson(res, 400, { error: 'El nombre no puede estar vacío.' });
       if (!validUsername(username)) return sendJson(res, 400, { error: 'El usuario debe tener entre 3 y 20 caracteres: letras, números o _. Siempre empieza con @.' });
       if (usernameTaken(username, account.id)) return sendJson(res, 409, { error: 'Ese nombre de usuario ya está ocupado.' });
-      if (!validAvatar) return sendJson(res, 400, { error: 'La foto de perfil no es válida.' });
+      if (!avatarIsValid) return sendJson(res, 400, { error: 'La foto debe ser PNG, JPEG, WebP o GIF y pesar como máximo 280 KB. Los GIF admiten hasta 1024 × 1024 px.' });
       account.displayName = displayName;
       account.username = username;
       account.avatarData = avatarData;
@@ -799,7 +815,7 @@ async function handleRequest(req, res) {
       const validImage = images.length === requestedImages.length && images.length > 0;
       if (requestedImages.length > 0 && !validImage) return sendJson(res, 400, { error: 'Una imagen no es válida o supera el límite de tamaño.' });
       const validAudio = validInlineAudio(audioData);
-      const validAvatar = !avatarData || /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(avatarData) && avatarData.length <= 400_000;
+      const avatarIsValid = validAvatar(avatarData);
       let validGif = false;
       try {
         const parsedGif = new URL(gifUrl);
@@ -812,7 +828,7 @@ async function handleRequest(req, res) {
         .map(file => ({ id: file.id, token: uploads[file.id].token || '', name: uploads[file.id].name, type: uploads[file.id].type, size: uploads[file.id].size }));
       if (files.length !== requestedFiles.length) return sendJson(res, 400, { error: 'Uno de los archivos ya no está disponible.' });
       if (!author || (!text && !validImage && !validAudio && !validGif && !files.length)) return sendJson(res, 400, { error: 'Escribe un mensaje, selecciona una imagen, un GIF, un audio o un archivo.' });
-      if (!validAvatar) return sendJson(res, 400, { error: 'La foto de perfil no es válida.' });
+      if (!avatarIsValid) return sendJson(res, 400, { error: 'La foto de perfil no es válida o supera 280 KB.' });
       const effectiveAuthor = account ? account.displayName : author;
       const effectiveAvatar = account ? (account.avatarData || '') : avatarData;
       const message = { id: crypto.randomUUID(), clientId: clientMessageId(data), author: effectiveAuthor, text, isAccount: Boolean(account), createdAt: Date.now() };

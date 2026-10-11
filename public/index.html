@@ -34,11 +34,14 @@
           <div class="profile-menu-heading"><strong>Tu perfil</strong><button id="close-profile" type="button" aria-label="Cerrar menú">×</button></div>
           <div id="profile-avatar-preview" class="profile-avatar profile-preview profile-fallback" aria-hidden="true">?</div>
           <button id="change-avatar" class="profile-action" type="button">Cambiar foto</button>
+          <small>GIF animado: hasta 280 KB y 1024 × 1024 px.</small>
           <label for="author">Nombre visible</label>
           <input id="author" maxlength="30" placeholder="Tu nombre" autocomplete="nickname" required />
           <label for="profile-username">Nombre de usuario</label>
           <input id="profile-username" maxlength="21" placeholder="@usuario" autocomplete="username" required />
           <button id="save-profile" class="save-profile" type="button">Guardar cambios</button>
+          <button id="toggle-notifications" class="profile-action" type="button">Activar notificaciones</button>
+          <small id="notification-status" role="status"></small>
         </div>
 
         <div id="friends-menu" class="friends-menu" hidden>
@@ -114,7 +117,7 @@
         </div>
 
         <form id="message-form" class="composer">
-          <input id="avatar" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp" />
+          <input id="avatar" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
           <label class="sr-only" for="text">Mensaje</label>
           <input id="text" maxlength="500" placeholder="Escribe algo..." autocomplete="off" />
           <button id="attachment-toggle" class="attachment-toggle" type="button" aria-label="Agregar contenido" aria-expanded="false">+</button>
@@ -148,6 +151,17 @@
       </aside>
       <button id="mobile-drawer-backdrop" class="mobile-drawer-backdrop" type="button" aria-label="Cerrar panel" hidden></button>
     </main>
+    <dialog id="public-profile" aria-labelledby="public-profile-title">
+      <button id="close-public-profile" type="button" aria-label="Cerrar perfil">×</button>
+      <h2 id="public-profile-title">Perfil</h2>
+      <div id="public-profile-avatar" class="profile-avatar profile-preview profile-fallback"></div>
+      <strong id="public-profile-name"></strong>
+      <p id="public-profile-username"></p>
+      <p id="public-profile-status" role="status"></p>
+      <button id="public-profile-chat" class="profile-action" type="button" hidden>Abrir conversación</button>
+    </dialog>
+    <button id="notification-toast" type="button" role="status" hidden></button>
+    <script src="/notifications.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

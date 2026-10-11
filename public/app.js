@@ -184,7 +184,8 @@ function friendAvatarMarkup(friend, extraClass = '') {
 }
 
 function renderFriends() {
-  friendList.innerHTML = friendsData.friends.map(friend => friendAvatarMarkup(friend, activePrivateFriend?.username === friend.username ? 'active' : '')).join('');
+  friendList.innerHTML = friendsData.friends.map(friend => `<div class="friend-entry">${friendAvatarMarkup(friend, activePrivateFriend?.username === friend.username ? 'active' : '')}<button class="friend-profile-link" type="button" data-view-profile="${escapeHtml(friend.username)}" aria-label="Ver perfil de ${escapeHtml(friend.username)}">Perfil</button></div>`).join('');
+  refreshNoticeBadges();
   incomingRequests.innerHTML = friendsData.incoming.length
     ? friendsData.incoming.map(request => `<div class="friend-request"><span>${escapeHtml(request.from.displayName)} <small>${escapeHtml(request.from.username)}</small></span><button data-request-id="${request.id}" data-request-action="accept">Aceptar</button><button data-request-id="${request.id}" data-request-action="reject">×</button></div>`).join('')
     : '<small class="friend-empty">No tienes solicitudes pendientes.</small>';
@@ -209,6 +210,7 @@ async function loadFriends() {
 async function openPrivateChat(friend) {
   setMobileDrawer();
   activePrivateFriend = friend;
+  readActiveRoom();
   render([]);
   chatPanel.classList.add('private-mode');
   groupRoom.classList.remove('active');
@@ -237,6 +239,7 @@ async function openGroupChat() {
   setMobileDrawer();
   const wasPrivate = Boolean(activePrivateFriend);
   activePrivateFriend = null;
+  readActiveRoom();
   if (wasPrivate) render([]);
   chatPanel.classList.remove('private-mode');
   groupRoom.classList.add('active');
@@ -250,12 +253,14 @@ async function openGroupChat() {
 
 groupRoom.addEventListener('click', () => { openGroupChat().catch(() => {}); });
 friendList.addEventListener('click', event => {
+  const profile = event.target.closest('[data-view-profile]');
+  if (profile) { viewProfile(profile.dataset.viewProfile); return; }
   const button = event.target.closest('[data-friend-username]');
   if (!button) return;
   const friend = friendsData.friends.find(item => item.username === button.dataset.friendUsername);
   if (friend) openPrivateChat(friend).catch(() => {});
 });
-addFriend.addEventListener('click', () => { friendsMenu.hidden = !friendsMenu.hidden; if (!friendsMenu.hidden) loadFriends().catch(() => {}); });
+addFriend.addEventListener('click', () => { friendsMenu.hidden = !friendsMenu.hidden; if (!friendsMenu.hidden) { notices.read('#friends'); refreshNoticeBadges(); loadFriends().catch(() => {}); } });
 closeFriends.addEventListener('click', () => { friendsMenu.hidden = true; });
 
 sendFriendRequest.addEventListener('click', async () => {
@@ -277,6 +282,7 @@ incomingRequests.addEventListener('click', async event => {
 });
 
 function showAccount(account) {
+  if (activeAccount?.email !== account?.email) { notices.reset(); notificationToast.hidden = true; refreshNoticeBadges(); }
   activeAccount = account;
   const loggedIn = Boolean(account);
   accountEmail.hidden = loggedIn;
@@ -379,7 +385,7 @@ messagesElement.addEventListener('click', event => {
 function messageMarkup(message) {
   return `
     <article class="message" data-message-id="${message.id}">
-      <div class="message-meta">${avatarMarkup(message)}<div class="message-name-row"><strong>${escapeHtml(message.author)}${message.isAccount ? `<span class="account-star" title="Cuenta registrada">★</span><span class="message-username">${escapeHtml(message.username || '')}</span>` : ''}</strong><time>${timeLabel(message.createdAt)}${message.edited ? ' · editado' : ''}</time></div></div>
+      <div class="message-meta" ${message.isAccount && message.username ? `role="button" tabindex="0" data-profile-username="${escapeHtml(message.username)}" aria-label="Ver perfil de ${escapeHtml(message.username)}"` : ''}>${avatarMarkup(message)}<div class="message-name-row"><strong>${escapeHtml(message.author)}${message.isAccount ? `<span class="account-star" title="Cuenta registrada">★</span><span class="message-username">${escapeHtml(message.username || '')}</span>` : ''}</strong><time>${timeLabel(message.createdAt)}${message.edited ? ' · editado' : ''}</time></div></div>
       ${message.replyTo ? `<div class="reply-preview"><strong>↪ ${escapeHtml(message.replyTo.author)}</strong><span>${escapeHtml(message.replyTo.text)}</span></div>` : ''}
       ${renderImages(message)}
       ${message.gifUrl ? renderMedia(message.gifUrl, `GIF enviado por ${message.author}`) : ''}
@@ -451,7 +457,11 @@ function renderImages(message) {
 
 function renderFiles(message) {
   if (message.pending) return (message.files || []).map(file => `<span class="message-file">📎 ${escapeHtml(file.name)}</span>`).join('');
-  return (message.files || []).map(file => `<a class="message-file" href="/api/uploads/${encodeURIComponent(file.id)}${file.token ? `?token=${encodeURIComponent(file.token)}` : ''}" target="_blank" rel="noopener">📎 ${escapeHtml(file.name || 'Archivo')} <small>${formatBytes(file.size || 0)}</small></a>`).join('');
+  return (message.files || []).map(file => {
+    const url = `/api/uploads/${encodeURIComponent(file.id)}${file.token ? `?token=${encodeURIComponent(file.token)}` : ''}`;
+    if (/^image\/(jpeg|png|webp|gif)$/.test(file.type || '')) return renderMedia(url, file.name || 'Imagen');
+    return `<a class="message-file" href="${url}" target="_blank" rel="noopener">📎 ${escapeHtml(file.name || 'Archivo')} <small>${formatBytes(file.size || 0)}</small></a>`;
+  }).join('');
 }
 
 function formatBytes(bytes) {
@@ -596,8 +606,8 @@ avatarInput.addEventListener('change', async () => {
     draftAvatarData = await prepareAvatar(file);
     updateAvatarPreview(draftAvatarData);
     imageStatus.textContent = 'Foto lista. Pulsa “Guardar cambios” en tu perfil.';
-  } catch {
-    imageStatus.textContent = 'No se pudo preparar la foto de perfil.';
+  } catch (error) {
+    imageStatus.textContent = error.message || 'No se pudo preparar la foto de perfil.';
   }
 });
 
@@ -655,6 +665,10 @@ function updateAvatarPreview(data) {
 }
 
 function prepareAvatar(file) {
+  if (file.type === 'image/gif') {
+    if (file.size > 280_000) return Promise.reject(new Error('El GIF de perfil debe pesar como máximo 280 KB.'));
+    return readFileAsDataUrl(file); // Preserve every animation frame; never rasterize a GIF to canvas.
+  }
   return new Promise((resolve, reject) => {
     const image = new Image();
     const objectUrl = URL.createObjectURL(file);
@@ -974,17 +988,116 @@ saveEdit.addEventListener('click', async () => {
   else imageStatus.textContent = 'No se pudo editar el mensaje.';
 });
 
+const notices = new BrumaNotices();
+const notificationToggle = document.querySelector('#toggle-notifications');
+const notificationStatus = document.querySelector('#notification-status');
+const notificationToast = document.querySelector('#notification-toast');
+let notificationsEnabled = localStorage.getItem('bruma-notifications') === 'true';
+let noticeTimer;
+let noticeAction = null;
+
+function refreshNoticeBadges() {
+  document.title = notices.count() ? `(${notices.count()}) Bruma — chat efímero` : 'Bruma — chat efímero';
+  groupRoom.dataset.unread = String(notices.unread.get('') || 0);
+  addFriend.dataset.unread = String(notices.unread.get('#friends') || 0);
+  for (const button of friendList.querySelectorAll('[data-friend-username]')) button.dataset.unread = String(notices.unread.get(button.dataset.friendUsername) || 0);
+}
+function readActiveRoom() {
+  if (!document.hidden && document.hasFocus()) { notices.read(roomKey()); refreshNoticeBadges(); }
+}
+function notificationSettings() {
+  notificationToggle.textContent = notificationsEnabled ? 'Desactivar notificaciones' : 'Activar notificaciones';
+  notificationToggle.setAttribute('aria-pressed', String(notificationsEnabled));
+  notificationStatus.textContent = !notificationsEnabled ? 'Avisos desactivados.' :
+    !('Notification' in window) ? 'Avisos dentro de Bruma. Este navegador no admite avisos del sistema.' :
+    Notification.permission === 'granted' ? 'Avisos activados mientras Bruma esté abierta.' : 'Avisos dentro de Bruma. Los avisos del sistema necesitan permiso del navegador.';
+}
+notificationToggle.addEventListener('click', async () => {
+  notificationsEnabled = !notificationsEnabled;
+  localStorage.setItem('bruma-notifications', String(notificationsEnabled));
+  if (notificationsEnabled && 'Notification' in window && Notification.permission === 'default') {
+    try { await Notification.requestPermission(); } catch { /* In-app notices remain available. */ }
+  }
+  if (!notificationsEnabled) notificationToast.hidden = true;
+  notificationSettings();
+});
+notificationToast.addEventListener('click', () => { notificationToast.hidden = true; noticeAction?.(); });
+document.addEventListener('visibilitychange', readActiveRoom);
+window.addEventListener('focus', readActiveRoom);
+
+function notifyIncoming(message, room, own = false, request = false) {
+  const visible = !document.hidden && document.hasFocus() && (request ? !friendsMenu.hidden : roomKey() === room);
+  if (!notices.receive(message,room,own,visible)) return;
+  refreshNoticeBadges();
+  if (!notificationsEnabled) return;
+  const title = request ? 'Nueva solicitud de amistad' : room ? `Mensaje de ${message.author || room}` : `Sala del grupo · ${message.author || 'Mensaje nuevo'}`;
+  const text = request ? `${message.author} quiere agregarte.` : message.text || 'Ha compartido un archivo o contenido multimedia.';
+  const open = () => {
+    if (request) { setMobileDrawer('nav'); friendsMenu.hidden = false; loadFriends().catch(() => {}); notices.read('#friends'); refreshNoticeBadges(); }
+    else if (!room) openGroupChat().catch(() => {});
+    else {
+      const friend = friendsData.friends.find(item => item.username === room);
+      if (friend) openPrivateChat(friend).catch(() => {});
+    }
+  };
+  noticeAction = open; notificationToast.textContent = `${title}: ${text}`; notificationToast.hidden = false;
+  clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { notificationToast.hidden = true; },8000);
+  if ('Notification' in window && Notification.permission === 'granted' && (document.hidden || !document.hasFocus())) {
+    try {
+      const notification = new Notification(title,{body: text,tag: request ? 'bruma-friends' : `bruma:${room}`, data: {room}});
+      notification.onclick = () => { notification.close(); window.focus(); open(); };
+      setTimeout(() => notification.close(),10000);
+    } catch { /* Some mobile browsers require push; the in-app notice still works. */ }
+  }
+}
+notificationSettings();
+
+const publicProfileDialog = document.querySelector('#public-profile');
+let profileRequestGeneration = 0;
+let viewedProfile = null;
+document.querySelector('#close-public-profile').addEventListener('click', () => { ++profileRequestGeneration; publicProfileDialog.close(); });
+document.querySelector('#public-profile-chat').addEventListener('click', () => {
+  if (!viewedProfile) return;
+  publicProfileDialog.close(); openPrivateChat(viewedProfile).catch(() => {});
+});
+async function viewProfile(username) {
+  const generation = ++profileRequestGeneration;
+  const name = document.querySelector('#public-profile-name');
+  const handle = document.querySelector('#public-profile-username');
+  const avatar = document.querySelector('#public-profile-avatar');
+  const status = document.querySelector('#public-profile-status');
+  const chat = document.querySelector('#public-profile-chat');
+  viewedProfile = null; name.textContent = ''; handle.textContent = ''; avatar.textContent = '?'; avatar.classList.add('profile-fallback'); chat.hidden = true; status.textContent = 'Cargando perfil…';
+  if (!publicProfileDialog.open) publicProfileDialog.showModal();
+  try {
+    const response = await apiFetch(`/api/profiles/${encodeURIComponent(username)}`);
+    const result = await response.json();
+    if (generation !== profileRequestGeneration || !publicProfileDialog.open) return;
+    if (!response.ok) { status.textContent = result.error || 'No se pudo abrir el perfil.'; return; }
+    const profile = result.profile; viewedProfile = profile;
+    name.textContent = profile.displayName; handle.textContent = profile.username; status.textContent = '';
+    avatar.textContent = (profile.displayName || '?').slice(0,1).toUpperCase();
+    if (profile.avatarData) { const image = document.createElement('img'); image.src = profile.avatarData; image.alt = `Foto de ${profile.displayName}`; avatar.replaceChildren(image); avatar.classList.remove('profile-fallback'); }
+    chat.hidden = !friendsData.friends.some(friend => friend.username === profile.username);
+  } catch { if (generation === profileRequestGeneration) status.textContent = 'No se pudo conectar para abrir el perfil.'; }
+}
+messagesElement.addEventListener('click', event => { const target = event.target.closest('[data-profile-username]'); if (target) viewProfile(target.dataset.profileUsername); });
+messagesElement.addEventListener('keydown', event => { if (!['Enter',' '].includes(event.key)) return; const target = event.target.closest('[data-profile-username]'); if (target) { event.preventDefault(); viewProfile(target.dataset.profileUsername); } });
+roomTitle.addEventListener('click', () => { if (activePrivateFriend) viewProfile(activePrivateFriend.username); });
+
 let events;
 function connectEvents() {
   events?.close();
   events = new EventSource('/api/events?v=3');
   events.addEventListener('messages', event => { if (!activePrivateFriend) render(JSON.parse(event.data)); });
-  events.addEventListener('message-created', event => { const message = JSON.parse(event.data); if (!activePrivateFriend) addIncomingMessage(message); else if (message.clientId) outbox.delete(message.clientId); });
+  events.addEventListener('message-created', event => { const message = JSON.parse(event.data); notifyIncoming(message,'',Boolean(message.canEdit || outbox.has(message.clientId))); if (!activePrivateFriend) addIncomingMessage(message); else if (message.clientId) outbox.delete(message.clientId); });
   events.addEventListener('message-updated', event => { if (!activePrivateFriend) updateIncomingMessage(JSON.parse(event.data)); });
   events.addEventListener('message-deleted', event => { if (!activePrivateFriend) deleteIncomingMessage(JSON.parse(event.data).id); });
   events.addEventListener('friends', () => { loadFriends().catch(() => {}); });
+  events.addEventListener('friend-request', event => { const data = JSON.parse(event.data); notifyIncoming({id: `friend:${data.id}`,author: data.from.displayName},'#friends',false,true); });
   events.addEventListener('private-created', event => {
     const data = JSON.parse(event.data);
+    notifyIncoming(data.message,data.friendUsername,Boolean(data.isOwn || data.message?.username === activeAccount?.username || outbox.has(data.message?.clientId)));
     if (activePrivateFriend?.username === data.friendUsername) addIncomingMessage(data.message);
     else if (data.message?.clientId) outbox.delete(data.message.clientId);
   });

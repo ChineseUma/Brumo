@@ -9,10 +9,12 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.ColorSpace;
 import android.graphics.ImageDecoder;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.AnimatedImageDrawable;
+import android.graphics.drawable.Animatable;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -79,6 +81,8 @@ public final class MainActivity extends Activity {
     private static final int AUDIO_PERMISSION = 103;
     private static final int AUDIO_PICK = 104;
     private static final int FILE_PICK = 105;
+    private static final int NOTIFICATION_PERMISSION = 106;
+    private Intent pendingNotification;
     private static final int MESSAGE_PAGE_SIZE = 40;
 
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -86,8 +90,15 @@ public final class MainActivity extends Activity {
     private final ExecutorService textIo = Executors.newSingleThreadExecutor();
     private final ExecutorService readIo = Executors.newFixedThreadPool(3);
     private final ExecutorService mediaIo = Executors.newFixedThreadPool(2);
-    private final ArrayList<String> pendingImages = new ArrayList<>();
+    private final ExecutorService preparationIo = Executors.newSingleThreadExecutor();
+    private final ArrayList<PendingFile> pendingImages = new ArrayList<>();
+    private int preparingImages;
+    private volatile int attachmentGeneration;
+    private final LruCache<String, Bitmap> imageCache = new LruCache<String, Bitmap>(4 * 1024 * 1024) {
+        @Override protected int sizeOf(String key, Bitmap bitmap) { return bitmap.getByteCount(); }
+    };
     private final ArrayList<PendingFile> pendingFiles = new ArrayList<>();
+    private final ArrayList<ImageView> displayedImages = new ArrayList<>();
     private final ArrayList<PendingMedia> deferredMedia = new ArrayList<>();
     private final HashMap<String, JSONArray> roomCache = new HashMap<>();
     private final LruCache<String, Bitmap> avatarCache = new LruCache<String, Bitmap>(4 * 1024 * 1024) {
@@ -109,6 +120,7 @@ public final class MainActivity extends Activity {
         final String name;
         final String type;
         final long size;
+        File preparedFile;
         PendingFile(Uri uri, String name, String type, long size) {
             this.uri = uri; this.name = name; this.type = type; this.size = size;
         }
@@ -143,6 +155,7 @@ public final class MainActivity extends Activity {
     private int gifSearchGeneration;
     private String guestName;
     private boolean connected;
+    private boolean foreground;
     private final HashMap<String, PendingSend> outbox = new HashMap<>();
     private static final class PendingSend {
         final String room;
@@ -152,6 +165,8 @@ public final class MainActivity extends Activity {
         final ArrayList<PendingFile> files;
         final JSONArray uploaded = new JSONArray();
         boolean running;
+        boolean started;
+        boolean cancelled;
         PendingSend(String room, String identity, JSONObject body, JSONObject preview, ArrayList<PendingFile> files) {
             this.room = room; this.identity = identity; this.body = body; this.preview = preview; this.files = files;
         }
@@ -188,6 +203,7 @@ public final class MainActivity extends Activity {
             getPreferences(MODE_PRIVATE).edit().putString("guest_name", guestName).apply();
         }
         buildScreen();
+        if (getIntent().hasExtra("notification_room")) pendingNotification = getIntent();
         refreshAll();
     }
 
@@ -201,14 +217,32 @@ public final class MainActivity extends Activity {
         if (recordingFile != null) recordingFile.delete();
         audioGeneration++;
         stopAudioPlayback();
+        stopImageAnimations();
         io.shutdownNow();
         textIo.shutdownNow();
         readIo.shutdownNow();
         mediaIo.shutdownNow();
+        preparationIo.shutdownNow();
+        clearPendingImages();
+        for (PendingSend send : outbox.values()) synchronized (send) {
+            send.cancelled = true;
+            if (!send.started) releasePreparedFiles(send);
+        }
         super.onDestroy();
     }
 
+    @Override protected void onStart() {
+        super.onStart();
+        foreground = true;
+        NotificationService.appVisible = true;
+        startNotificationService();
+        if (messageScroll != null) messageScroll.post(this::loadVisibleMedia);
+    }
+
     @Override protected void onStop() {
+        foreground = false;
+        NotificationService.appVisible = false;
+        stopImageAnimations();
         if (recorder != null) stopRecording();
         super.onStop();
     }
@@ -294,7 +328,8 @@ public final class MainActivity extends Activity {
             }
             return true;
         });
-        if (Build.VERSION.SDK_INT >= 28 && drawable instanceof AnimatedImageDrawable) ((AnimatedImageDrawable) drawable).start();
+        if (drawable instanceof Animatable) ((Animatable) drawable).start();
+        dialog.setOnDismissListener(ignored -> { if (drawable instanceof Animatable) ((Animatable) drawable).stop(); });
 
         dialog.setContentView(frame);
         dialog.setOnShowListener(ignored -> {
@@ -413,7 +448,7 @@ public final class MainActivity extends Activity {
         attachmentLabel.setVisibility(View.GONE);
         attachmentLabel.setPadding(d(6), d(3), d(6), d(7));
         attachmentLabel.setOnClickListener(v -> {
-            pendingImages.clear();
+            clearPendingImages();
             pendingFiles.clear();
             pendingAudioData = "";
             selectedGifUrl = "";
@@ -492,6 +527,7 @@ public final class MainActivity extends Activity {
         connectionLabel.setText("● Conectando…");
         connectionLabel.setTextColor(MUTED);
         activeFriend = "";
+        NotificationService.activeRoom = "";
         activeFriendName = "";
         roomTitle.setText("Sala del grupo");
         showRoomMessages("", roomCache.get(""));
@@ -550,6 +586,7 @@ public final class MainActivity extends Activity {
     }
 
     private void startEvents() {
+        startNotificationService(); // Reconnect using the new cookies after login, logout or a server change.
         int generation = ++eventGeneration;
         api.startEvents(new ApiClient.EventListener() {
             @Override public void onEvent(String event, Object data) {
@@ -559,6 +596,39 @@ public final class MainActivity extends Activity {
                 main.post(() -> { if (generation == eventGeneration) setConnection(value); });
             }
         });
+        consumeNotification();
+    }
+
+    private void startNotificationService() {
+        if (!foreground || !getSharedPreferences("bruma_native",MODE_PRIVATE).getBoolean("notifications_enabled",false)) return;
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return;
+        try { startForegroundService(new Intent(this,NotificationService.class)); }
+        catch (RuntimeException failure) { error("No se pudo mantener la conexión de notificaciones."); }
+    }
+
+    private void toggleNotifications() {
+        android.content.SharedPreferences prefs = getSharedPreferences("bruma_native",MODE_PRIVATE);
+        if (prefs.getBoolean("notifications_enabled",false)) {
+            prefs.edit().putBoolean("notifications_enabled",false).apply();
+            stopService(new Intent(this,NotificationService.class));
+            getSystemService(android.app.NotificationManager.class).cancelAll();
+            renderDrawer(); return;
+        }
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},NOTIFICATION_PERMISSION); return;
+        }
+        prefs.edit().putBoolean("notifications_enabled",true).apply(); startNotificationService(); renderDrawer();
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent); setIntent(intent); pendingNotification = intent; consumeNotification();
+    }
+
+    private void consumeNotification() {
+        if (pendingNotification == null) return;
+        Intent intent = pendingNotification; pendingNotification = null;
+        if (intent.getBooleanExtra("notification_friends",false)) { refreshFriends(); showDrawer(false); }
+        else { String room = intent.getStringExtra("notification_room"); if (room != null) openRoom(room,room); }
     }
 
     private void showRoomMessages(String room, JSONArray cached) {
@@ -712,9 +782,11 @@ public final class MainActivity extends Activity {
     }
 
     private void openRoom(String username, String displayName) {
+        NotificationService.activeRoom = username;
+        getSystemService(android.app.NotificationManager.class).cancel("bruma:"+username,2);
         hideDrawer();
         replyToId = "";
-        pendingImages.clear();
+        clearPendingImages();
         pendingFiles.clear();
         pendingAudioData = "";
         selectedGifUrl = "";
@@ -741,22 +813,30 @@ public final class MainActivity extends Activity {
 
     private String identity() { return account == null ? "guest" : account.optString("email"); }
     private void sendMessage() {
-        if (recorder != null || preparingAudio) { error("Termina de preparar el audio antes de enviar."); return; }
+        if (recorder != null || preparingAudio || preparingImages > 0) { error("Termina de preparar los adjuntos antes de enviar."); return; }
         if (outbox.size() >= 20) { error("Espera o reintenta los envíos pendientes."); return; }
         String text = input.getText().toString().trim();
         if (text.isEmpty() && pendingFiles.isEmpty() && pendingImages.isEmpty() && pendingAudioData.isEmpty() && selectedGifUrl.isEmpty()) return;
         try {
             String id = UUID.randomUUID().toString();
             String author = account == null ? guestName : account.optString("displayName");
-            JSONObject body = new JSONObject().put("clientId", id).put("text", text).put("images", new JSONArray(pendingImages));
+            JSONObject body = new JSONObject().put("clientId", id).put("text", text);
             if (activeFriend.isEmpty()) body.put("author", author).put("replyToId", replyToId);
             else body.put("recipientUsername", activeFriend);
             if (!pendingAudioData.isEmpty()) body.put("audioData", pendingAudioData);
             if (!selectedGifUrl.isEmpty()) body.put("gifUrl", selectedGifUrl);
-            JSONObject preview = new JSONObject(body.toString()).put("id", "pending-" + id).put("author", author)
-                    .put("createdAt", System.currentTimeMillis()).put("pending", true);
+            JSONObject preview = new JSONObject();
+            for (Iterator<String> keys = body.keys(); keys.hasNext();) {
+                String key = keys.next(); preview.put(key, body.get(key));
+            }
+            preview.put("id", "pending-" + id).put("author", author).put("createdAt", System.currentTimeMillis()).put("pending", true);
             if (account != null) preview.put("avatarData", account.optString("avatarData"));
-            PendingSend send = new PendingSend(activeFriend, identity(), body, preview, new ArrayList<>(pendingFiles));
+            ArrayList<PendingFile> attachments = new ArrayList<>(pendingImages);
+            attachments.addAll(pendingFiles);
+            JSONArray localImages = new JSONArray();
+            for (PendingFile image : pendingImages) localImages.put(image.uri.toString());
+            if (localImages.length() > 0) preview.put("images", localImages);
+            PendingSend send = new PendingSend(activeFriend, identity(), body, preview, attachments);
             outbox.put(id, send);
             addRoomMessage(activeFriend, preview);
             input.setText(""); pendingImages.clear(); pendingFiles.clear(); pendingAudioData=""; selectedGifUrl=""; replyToId="";
@@ -767,23 +847,45 @@ public final class MainActivity extends Activity {
     private void transmit(PendingSend send) {
         if (send.running) return;
         if (!send.identity.equals(identity())) { error("Vuelve a la cuenta que inició este envío."); return; }
+        synchronized (send) {
+            if (send.cancelled) return;
+            send.started = false;
+        }
         send.running = true;
         try { send.preview.put("failed", false); } catch (Exception ignored) { }
         addRoomMessage(send.room, send.preview);
-        boolean textOnly = send.files.isEmpty() && send.body.optJSONArray("images").length() == 0 && send.body.optString("audioData").isEmpty();
+        boolean textOnly = send.files.isEmpty() && send.body.optString("audioData").isEmpty();
         (textOnly ? textIo : io).execute(() -> {
+            synchronized (send) {
+                if (send.cancelled) return;
+                send.started = true;
+            }
             try {
                 while (send.uploaded.length() < send.files.size()) {
                     PendingFile file = send.files.get(send.uploaded.length());
-                    send.uploaded.put(api.upload("/api/uploads", file.type, file.name, send.room, getContentResolver().openInputStream(file.uri), file.size));
+                    JSONObject uploaded = api.upload("/api/uploads", file.type, file.name, send.room, getContentResolver().openInputStream(file.uri), file.size);
+                    send.uploaded.put(uploaded);
+                    if (file.preparedFile != null) {
+                        String localKey = api.baseUrl() + "|960|" + file.uri;
+                        Bitmap previewBitmap = imageCache.remove(localKey);
+                        if (previewBitmap != null) imageCache.put(api.baseUrl() + "|960|" + uploaded.optString("url"), previewBitmap);
+                    }
                 }
-                if (send.uploaded.length() > 0) send.body.put("files", send.uploaded);
+                if (send.uploaded.length() > 0) {
+                    JSONArray references = new JSONArray();
+                    for (int index = 0; index < send.uploaded.length(); index++)
+                        references.put(new JSONObject().put("id", send.uploaded.getJSONObject(index).getString("id")));
+                    send.body.put("files", references);
+                }
                 JSONObject sent = (JSONObject) api.request("POST", send.room.isEmpty() ? "/api/messages" : "/api/private/messages", send.body);
-                main.post(() -> { send.running = false; addRoomMessage(send.room, sent); });
+                main.post(() -> { send.running = false; releasePreparedFiles(send); if (!isDestroyed()) addRoomMessage(send.room, sent); });
             } catch (Exception failure) {
+                if ("Uno de los archivos ya no está disponible.".equals(failure.getMessage())) {
+                    while (send.uploaded.length() > 0) send.uploaded.remove(send.uploaded.length() - 1);
+                }
                 main.post(() -> {
                     send.running = false;
-                    if (!outbox.containsKey(send.body.optString("clientId"))) return;
+                    if (isDestroyed() || !outbox.containsKey(send.body.optString("clientId"))) { releasePreparedFiles(send); return; }
                     try { send.preview.put("failed", true); } catch (Exception ignored) { }
                     addRoomMessage(send.room, send.preview);
                     error(failure.getMessage() == null ? "No enviado. Toca Reintentar." : failure.getMessage());
@@ -792,11 +894,25 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void clearPendingImages() {
+        attachmentGeneration++;
+        preparingImages = 0;
+        for (PendingFile file : pendingImages) if (file.preparedFile != null) file.preparedFile.delete();
+        pendingImages.clear();
+    }
+    private void releasePreparedFiles(PendingSend send) {
+        for (PendingFile file : send.files) if (file.preparedFile != null) file.preparedFile.delete();
+    }
+
     private void updateComposerHints() {
         replyLabel.setText(replyToId.isEmpty() ? "" : "↪ Respondiendo · toca para cancelar");
         replyLabel.setVisibility(replyToId.isEmpty() ? View.GONE : View.VISIBLE);
         ArrayList<String> pieces = new ArrayList<>();
-        if (!pendingImages.isEmpty()) pieces.add(pendingImages.size() + " imagen(es)");
+        if (!pendingImages.isEmpty()) {
+            long bytes = 0; for (PendingFile image : pendingImages) bytes += image.size;
+            pieces.add(pendingImages.size() + " imagen(es) · " + formatBytes(bytes));
+        }
+        if (preparingImages > 0) pieces.add("Preparando imágenes…");
         if (!selectedGifUrl.isEmpty()) pieces.add("GIF");
         if (!pendingAudioData.isEmpty()) pieces.add("Audio");
         if (!pendingFiles.isEmpty()) pieces.add(pendingFiles.size() + " archivo(s)");
@@ -887,7 +1003,18 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void stopImageAnimations() {
+        for (ImageView image : displayedImages)
+            if (image.getDrawable() instanceof Animatable) ((Animatable) image.getDrawable()).stop();
+    }
+
     private void loadVisibleMedia() {
+        displayedImages.removeIf(image -> !image.isAttachedToWindow());
+        for (ImageView image : displayedImages) {
+            if (!(image.getDrawable() instanceof Animatable)) continue;
+            Animatable animation = (Animatable) image.getDrawable();
+            if (foreground && image.getGlobalVisibleRect(new Rect())) animation.start(); else animation.stop();
+        }
         Iterator<PendingMedia> iterator = deferredMedia.iterator();
         while (iterator.hasNext()) {
             PendingMedia pending = iterator.next();
@@ -930,6 +1057,10 @@ public final class MainActivity extends Activity {
         String username = message.optString("username");
         String stamp = clockFormat.format(new Date(message.optLong("createdAt")));
         heading.addView(label((username.isEmpty() ? "" : username + " · ") + stamp + (message.optBoolean("edited") ? " · editado" : ""), 11, MUTED, false));
+        if (message.optBoolean("isAccount") && !username.isEmpty()) {
+            head.setContentDescription("Ver perfil de " + username);
+            head.setOnClickListener(v -> showPublicProfile(username));
+        }
         JSONObject reply = message.optJSONObject("replyTo");
         if (reply != null) {
             TextView preview = label("↪ " + reply.optString("author") + ": " + reply.optString("text"), 12, ACCENT, false);
@@ -965,6 +1096,9 @@ public final class MainActivity extends Activity {
             String name = file.optString("name", "Archivo");
             String token = file.optString("token");
             String path = "/api/uploads/" + Uri.encode(file.optString("id")) + (token.isEmpty() ? "" : "?token=" + Uri.encode(token));
+            if (isImageType(file.optString("type"))) {
+                addImage(outer, path); continue;
+            }
             TextView download = action("📎 " + name + " · " + formatBytes(file.optLong("size")), () -> {
                 try {
                     Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(api.baseUrl() + path));
@@ -1030,20 +1164,23 @@ public final class MainActivity extends Activity {
     }
 
     private void loadAvatar(ImageView target, String dataUrl) {
-        Bitmap cached = avatarCache.get(dataUrl);
-        if (cached != null) { target.setImageBitmap(cached); return; }
-        mediaIo.execute(() -> {
-            Bitmap result = bitmap(dataUrl, 128);
-            if (result == null) return;
-            main.post(() -> {
-                avatarCache.put(dataUrl, result);
-                if (target.isAttachedToWindow()) target.setImageBitmap(result);
-            });
+        trackAnimation(target);
+        loadImage(target,dataUrl,128);
+    }
+
+    private void trackAnimation(ImageView view) {
+        if (!displayedImages.contains(view)) displayedImages.add(view);
+        view.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override public void onViewAttachedToWindow(View ignored) { }
+            @Override public void onViewDetachedFromWindow(View ignored) {
+                if (view.getDrawable() instanceof Animatable) ((Animatable)view.getDrawable()).stop();
+            }
         });
     }
 
     private void addImage(LinearLayout parent, String address) {
         ImageView view = new ImageView(this);
+        trackAnimation(view);
         view.setScaleType(ImageView.ScaleType.FIT_CENTER);
         view.setBackground(background(PANEL, 12));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, d(170));
@@ -1057,39 +1194,65 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private static boolean isImageType(String type) {
+        return type.equals("image/jpeg") || type.equals("image/png") || type.equals("image/webp") || type.equals("image/gif");
+    }
+
     private void loadImage(ImageView target, String address, int maxDimension) {
+        // Do not retain a second giant Base64 string as a cache key for legacy messages.
+        String key = address.startsWith("data:") ? null : api.baseUrl() + "|" + maxDimension + "|" + address;
+        Bitmap cached = key == null ? null : imageCache.get(key);
+        if (cached != null) { target.setImageBitmap(cached); return; }
         mediaIo.execute(() -> {
+            if (!target.isAttachedToWindow() || isDestroyed()) return;
+            File file = null; boolean temporary = false;
             try {
-                byte[] bytes;
+                byte[] bytes = null;
                 if (address.startsWith("data:image/")) {
-                    int comma = address.indexOf(',');
-                    if (comma < 0) return;
+                    int comma = address.indexOf(','); if (comma < 0) return;
                     bytes = Base64.decode(address.substring(comma + 1), Base64.DEFAULT);
-                } else if (address.startsWith("https://") || address.startsWith("/api/media/")) {
-                    bytes = api.mediaBytes(address, 10_000_000);
+                } else if (address.startsWith("file:")) {
+                    file = new File(Uri.parse(address).getPath());
+                } else if (address.startsWith("https://") || address.startsWith("/api/media/") || address.startsWith("/api/uploads/")) {
+                    file = api.mediaFile(address, getCacheDir(), () -> target.isAttachedToWindow() && !isDestroyed()); temporary = true;
                 } else return;
+                if (!target.isAttachedToWindow() || isDestroyed()) return;
                 if (Build.VERSION.SDK_INT >= 28) {
-                    Drawable drawable = ImageDecoder.decodeDrawable(ImageDecoder.createSource(ByteBuffer.wrap(bytes)),
-                            (decoder, info, source) -> {
-                                int largest = Math.max(info.getSize().getWidth(), info.getSize().getHeight());
-                                if (largest > maxDimension) decoder.setTargetSampleSize((int) Math.ceil(largest / (double) maxDimension));
-                            });
+                    ImageDecoder.Source source = file == null ? ImageDecoder.createSource(ByteBuffer.wrap(bytes)) : ImageDecoder.createSource(file);
+                    Drawable drawable = ImageDecoder.decodeDrawable(source, (decoder, info, ignored) -> {
+                        int w = info.getSize().getWidth(), h = info.getSize().getHeight();
+                        double scale = Math.min(1d, maxDimension / (double) Math.max(w, h));
+                        decoder.setTargetSize(Math.max(1, (int) Math.round(w * scale)), Math.max(1, (int) Math.round(h * scale)));
+                        decoder.setTargetColorSpace(ColorSpace.get(ColorSpace.Named.SRGB));
+                    });
+                    if (key != null && drawable instanceof BitmapDrawable) imageCache.put(key, ((BitmapDrawable) drawable).getBitmap());
                     main.post(() -> {
-                        if (!target.isAttachedToWindow()) return;
+                        if (!target.isAttachedToWindow() || isDestroyed()) return;
                         target.setImageDrawable(drawable);
-                        if (drawable instanceof AnimatedImageDrawable) ((AnimatedImageDrawable) drawable).start();
+                        if (foreground && drawable instanceof AnimatedImageDrawable && target.getGlobalVisibleRect(new Rect())) ((AnimatedImageDrawable) drawable).start();
                     });
                 } else {
-                    BitmapFactory.Options bounds = new BitmapFactory.Options();
-                    bounds.inJustDecodeBounds = true;
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
-                    BitmapFactory.Options options = new BitmapFactory.Options();
-                    options.inSampleSize = 1;
+                    byte[] animationBytes = bytes;
+                    if (animationBytes == null && file != null) animationBytes = Files.readAllBytes(file.toPath());
+                    if (animationBytes != null && animationBytes.length > 6 && animationBytes[0]=='G' && animationBytes[1]=='I' && animationBytes[2]=='F') {
+                        android.graphics.Movie movie = android.graphics.Movie.decodeByteArray(animationBytes,0,animationBytes.length);
+                        if (movie != null && movie.width()>0 && movie.height()>0) {
+                            GifDrawable drawable = new GifDrawable(movie);
+                            main.post(() -> { if (target.isAttachedToWindow() && !isDestroyed()) { target.setImageDrawable(drawable); if (foreground) drawable.start(); } });
+                            return;
+                        }
+                    }
+                    BitmapFactory.Options bounds = new BitmapFactory.Options(); bounds.inJustDecodeBounds = true;
+                    if (file == null) BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+                    else BitmapFactory.decodeFile(file.getPath(), bounds);
+                    BitmapFactory.Options options = new BitmapFactory.Options(); options.inSampleSize = 1;
                     while (Math.max(bounds.outWidth, bounds.outHeight) / options.inSampleSize > maxDimension) options.inSampleSize *= 2;
-                    Bitmap decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
-                    main.post(() -> { if (target.isAttachedToWindow()) target.setImageBitmap(decoded); });
+                    Bitmap bitmap = file == null ? BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options) : BitmapFactory.decodeFile(file.getPath(), options);
+                    if (key != null && bitmap != null) imageCache.put(key, bitmap);
+                    main.post(() -> { if (target.isAttachedToWindow() && !isDestroyed()) target.setImageBitmap(bitmap); });
                 }
             } catch (Exception ignored) { }
+            finally { if (temporary && file != null) file.delete(); }
         });
     }
 
@@ -1231,7 +1394,7 @@ public final class MainActivity extends Activity {
             int generation = ++gifSearchGeneration;
             status.setText(term.isEmpty() ? "Cargando GIFs populares…" : "Buscando…");
             grid.removeAllViews();
-            mediaIo.execute(() -> {
+            readIo.execute(() -> {
                 try {
                     JSONArray found = api.requestGifs(giphyApiKey, term).optJSONArray("data");
                     main.post(() -> {
@@ -1263,8 +1426,12 @@ public final class MainActivity extends Activity {
             JSONObject renditions = gif.optJSONObject("images");
             if (renditions == null) continue;
             JSONObject full = renditions.optJSONObject("fixed_width");
-            JSONObject thumbnail = renditions.optJSONObject("fixed_width_small");
+            JSONObject thumbnail = renditions.optJSONObject("fixed_width_small_still");
+            if (thumbnail == null) thumbnail = renditions.optJSONObject("fixed_width_small");
             String address = full == null ? "" : full.optString("url");
+            if (full != null && Build.VERSION.SDK_INT >= 28 && full.optString("webp").startsWith("https://")
+                    && full.optLong("webp_size", Long.MAX_VALUE) < full.optLong("size", Long.MAX_VALUE)) address = full.optString("webp");
+            final String selectedAddress = address;
             String previewAddress = thumbnail == null ? address : thumbnail.optString("url", address);
             if (!address.startsWith("https://") || !previewAddress.startsWith("https://")) continue;
             ImageView preview = new ImageView(this);
@@ -1278,7 +1445,7 @@ public final class MainActivity extends Activity {
             loadImage(preview, previewAddress, 320);
             preview.setContentDescription("Adjuntar GIF " + gif.optString("title"));
             preview.setOnClickListener(v -> {
-                selectedGifUrl = address;
+                selectedGifUrl = selectedAddress;
                 updateComposerHints();
                 dialog.dismiss();
             });
@@ -1297,6 +1464,12 @@ public final class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == NOTIFICATION_PERMISSION) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                getSharedPreferences("bruma_native",MODE_PRIVATE).edit().putBoolean("notifications_enabled",true).apply(); startNotificationService(); renderDrawer();
+            } else error("Puedes activar las notificaciones en los ajustes de Android.");
+            return;
+        }
         if (requestCode != AUDIO_PERMISSION) return;
         if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) startRecording();
         else error("Activa el permiso del micrófono para enviar audios.");
@@ -1398,7 +1571,7 @@ public final class MainActivity extends Activity {
         boolean avatar = request == AVATAR_PICK;
         if (request == FILE_PICK) {
             String name = uri.getLastPathSegment() == null ? "archivo" : uri.getLastPathSegment();
-            long size = 0;
+            long size = -1;
             try (android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
                 if (cursor != null && cursor.moveToFirst()) {
                     int index = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE);
@@ -1407,7 +1580,8 @@ public final class MainActivity extends Activity {
                     if (nameIndex >= 0) name = cursor.getString(nameIndex);
                 }
             } catch (Exception ignored) { }
-            if (size > 500L * 1024L * 1024L) { error("El archivo debe pesar como máximo 500 MB."); return; }
+            long limit = type != null && (type.startsWith("image/") || type.startsWith("audio/")) ? 10_000_000 : 500_000_000;
+            if (size > limit) { error("El archivo debe pesar como máximo " + (limit == 10_000_000 ? "10" : "500") + " MB."); return; }
             pendingFiles.add(new PendingFile(uri, name, type == null ? "application/octet-stream" : type, size));
             updateComposerHints();
             return;
@@ -1425,11 +1599,36 @@ public final class MainActivity extends Activity {
             });
             return;
         }
-        if (type == null || !(type.equals("image/png") || type.equals("image/jpeg") || type.equals("image/webp") || (!avatar && type.equals("image/gif")))) {
-            error("Usa una imagen PNG, JPEG, WebP" + (avatar ? "." : " o GIF."));
+        if (type == null || !isImageType(type)) {
+            error("Usa una imagen PNG, JPEG, WebP o GIF.");
             return;
         }
-        mediaIo.execute(() -> {
+        if (!avatar) {
+            if (pendingImages.size() + preparingImages >= 4) { error("Puedes adjuntar hasta 4 imágenes a la vez."); return; }
+            int generation = attachmentGeneration;
+            preparingImages++; updateComposerHints();
+            preparationIo.execute(() -> {
+                if (generation != attachmentGeneration || isDestroyed()) return;
+                try {
+                    ImagePreparer.Result resultImage = ImagePreparer.prepare(this, uri, type);
+                    main.post(() -> {
+                        if (isDestroyed() || generation != attachmentGeneration) { resultImage.file.delete(); return; }
+                        preparingImages--;
+                        String extension = resultImage.type.equals("image/webp") ? ".webp" : resultImage.type.equals("image/gif") ? ".gif" : resultImage.type.equals("image/png") ? ".png" : ".jpg";
+                        PendingFile image = new PendingFile(Uri.fromFile(resultImage.file), "imagen" + extension, resultImage.type, resultImage.file.length());
+                        image.preparedFile = resultImage.file;
+                        pendingImages.add(image); updateComposerHints();
+                    });
+                } catch (Exception failure) {
+                    main.post(() -> {
+                        if (isDestroyed() || generation != attachmentGeneration) return;
+                        preparingImages--; updateComposerHints(); error(failure.getMessage());
+                    });
+                }
+            });
+            return;
+        }
+        preparationIo.execute(() -> {
             try (InputStream input = getContentResolver().openInputStream(uri); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
                 if (input == null) throw new Exception("No se pudo abrir la imagen.");
                 byte[] buffer = new byte[8192];
@@ -1441,11 +1640,7 @@ public final class MainActivity extends Activity {
                 }
                 String encoded = "data:" + type + ";base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
                 main.post(() -> {
-                    if (avatar) saveAvatar(encoded);
-                    else {
-                        if (pendingImages.size() >= 4) error("Puedes adjuntar hasta 4 imágenes a la vez.");
-                        else { pendingImages.add(encoded); updateComposerHints(); }
-                    }
+                    if (!isDestroyed()) saveAvatar(encoded);
                 });
             } catch (Exception failure) { main.post(() -> error(failure.getMessage())); }
         });
@@ -1528,6 +1723,7 @@ public final class MainActivity extends Activity {
                 final String friendUsername = user;
                 final String friendDisplayName = name;
                 drawerItem("◉ " + friendDisplayName, friendUsername + " · privado", () -> openRoom(friendUsername, friendDisplayName));
+                drawerItem("Ver perfil", friendUsername, () -> showPublicProfile(friendUsername));
             }
             drawerHeading("AMISTADES");
             drawerItem("＋ Agregar amigo", "Busca a alguien por @usuario", this::addFriendDialog);
@@ -1561,7 +1757,7 @@ public final class MainActivity extends Activity {
             drawerItem("Iniciar sesión / crear cuenta", "Guarda tu perfil y habla en privado", this::accountDialog);
         } else {
             drawerItem(account.optString("displayName"), account.optString("username"), this::profileDialog);
-            drawerItem("Cambiar foto de perfil", "PNG, JPEG o WebP", () -> {
+            drawerItem("Cambiar foto de perfil", "PNG, JPEG, WebP o GIF · hasta 280 KB", () -> {
                 Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                 intent.setType("image/*");
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -1570,6 +1766,8 @@ public final class MainActivity extends Activity {
             drawerItem("Cerrar sesión", account.optString("email"), this::logout);
         }
         drawerHeading("CONEXIÓN");
+        boolean noticesEnabled = getSharedPreferences("bruma_native",MODE_PRIVATE).getBoolean("notifications_enabled",false);
+        drawerItem(noticesEnabled ? "Desactivar notificaciones" : "Activar notificaciones", "Mensajes y solicitudes, también con la app minimizada",this::toggleNotifications);
         drawerItem("Servidor", api.baseUrl(), this::serverDialog);
         drawerItem("Actualizar", "Volver a cargar mensajes y cuenta", () -> { hideDrawer(); refreshAll(); });
     }
@@ -1593,10 +1791,7 @@ public final class MainActivity extends Activity {
             ImageView image = new ImageView(this);
             image.setScaleType(ImageView.ScaleType.CENTER_CROP);
             card.addView(image, new LinearLayout.LayoutParams(d(112), d(112)));
-            mediaIo.execute(() -> {
-                Bitmap result = bitmap(avatar, 384);
-                main.post(() -> { if (result != null && image.isAttachedToWindow()) image.setImageBitmap(result); });
-            });
+            trackAnimation(image); image.post(() -> loadImage(image,avatar,384));
             image.setOnClickListener(v -> {
                 mediaIo.execute(() -> {
                     Bitmap result = bitmap(avatar, 1200);
@@ -1681,6 +1876,8 @@ public final class MainActivity extends Activity {
 
     private void logout() {
         hideDrawer();
+        stopService(new Intent(this,NotificationService.class));
+        getSystemService(android.app.NotificationManager.class).cancelAll();
         run(() -> {
             api.request("POST", "/api/auth/logout", null);
             JSONObject next = (JSONObject) api.request("GET", "/api/auth/me", null);
@@ -1710,6 +1907,34 @@ public final class MainActivity extends Activity {
                     JSONObject result = (JSONObject) api.request("PATCH", "/api/auth/profile", body);
                     main.post(() -> { account = result.optJSONObject("account"); error("Perfil actualizado."); });
                 })).show();
+    }
+
+    private void showPublicProfile(String username) {
+        hideDrawer();
+        run(() -> {
+            JSONObject result = (JSONObject)api.request("GET","/api/profiles/"+Uri.encode(username),null);
+            JSONObject profile = result.getJSONObject("profile");
+            main.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                LinearLayout card = column(); card.setPadding(d(24),d(20),d(24),d(20)); card.setGravity(Gravity.CENTER_HORIZONTAL);
+                String name = profile.optString("displayName"), avatar = profile.optString("avatarData"), handle = profile.optString("username");
+                ImageView image = null;
+                if (avatar.isEmpty()) {
+                    TextView fallback = label(name.isEmpty() ? "?" : name.substring(0,1).toUpperCase(Locale.ROOT),44,TEXT,true);
+                    fallback.setGravity(Gravity.CENTER); card.addView(fallback,new LinearLayout.LayoutParams(d(112),d(112)));
+                } else {
+                    image = new ImageView(this); image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                    card.addView(image,new LinearLayout.LayoutParams(d(112),d(112))); trackAnimation(image);
+                }
+                card.addView(label(name,20,TEXT,true)); card.addView(label(handle,14,MUTED,false));
+                AlertDialog.Builder builder = new AlertDialog.Builder(this).setTitle("Perfil").setView(card).setNegativeButton("Cerrar",null);
+                JSONArray list = friends.optJSONArray("friends"); boolean isFriend = false;
+                if (list != null) for (int i=0;i<list.length();i++) { JSONObject friend = list.optJSONObject(i); if (friend != null && handle.equals(friend.optString("username"))) isFriend = true; }
+                if (isFriend) builder.setPositiveButton("Abrir conversación",(dialog,which) -> openRoom(handle,name));
+                AlertDialog dialog = builder.create(); dialog.show(); styleDialog(dialog);
+                if (image != null) { ImageView target = image; target.post(() -> loadImage(target,avatar,384)); }
+            });
+        });
     }
 
     private void addFriendDialog() {
@@ -1749,6 +1974,8 @@ public final class MainActivity extends Activity {
                 .setPositiveButton("Conectar", (dialog, which) -> {
                     try {
                         api.setBaseUrl(address.getText().toString());
+                        stopService(new Intent(this,NotificationService.class));
+                        getSystemService(android.app.NotificationManager.class).cancelAll();
                         roomCache.clear();
                         avatarCache.evictAll();
                         account = null;

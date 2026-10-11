@@ -14,8 +14,8 @@ android {
         applicationId 'com.bruma.chat'
         minSdk 26
         targetSdk 35
-        versionCode 8
-        versionName '0.2.4'
+        versionCode 10
+        versionName '0.2.6'
     }
 
     compileOptions {
@@ -37,7 +37,9 @@ android {
     buildTypes {
         release {
             if (signingFile.exists()) signingConfig signingConfigs.release
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
         }
     }
 

@@ -446,3 +446,13 @@ body { background: #161616; }
 @media (prefers-reduced-motion: reduce) {
   .friends-strip, .side-panel { transition: none; }
 }
+/* Perfiles públicos y avisos de conversaciones sin leer. */
+#public-profile { width: min(360px, calc(100% - 32px)); padding: 24px; color: #f4efef; background: #261b1b; border: 1px solid #8d3333; border-radius: 16px; text-align: center; }
+#public-profile::backdrop { background: #0009; }
+#close-public-profile { float: right; background: transparent; color: inherit; }
+.view-profile { border: 0; padding: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.friend-entry { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.friend-profile-link { padding: 2px 4px; border: 0; background: transparent; color: #e9abab; font-size: 11px; }
+.friend-avatar[data-unread]:not([data-unread="0"])::before, #add-friend[data-unread]:not([data-unread="0"])::before { content: attr(data-unread); position: absolute; z-index: 1; right: -3px; top: -3px; border-radius: 12px; padding: 2px 5px; font-size: 10px; color: white; background: #bf3131; }
+.friend-avatar, #add-friend { position: relative; }
+#notification-toast { position: fixed; z-index: 20; right: 20px; bottom: 20px; width: min(360px, calc(100% - 40px)); padding: 16px; border: 1px solid #c25d5d; border-radius: 12px; color: white; background: #421e1e; text-align: left; box-shadow: 0 8px 30px #0009; }

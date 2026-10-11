@@ -29,6 +29,12 @@ npm run bruma -- detener
 
 El cliente nativo para teléfono está en [android/](android/). Tiene una sala central y paneles desplegables para conversaciones y cuenta. Usa la misma API del servidor mediante el dominio HTTPS de Railway; consulta [android/README.md](android/README.md) para compilar el APK.
 
+## Perfiles y notificaciones
+
+En Cuenta puedes elegir un GIF como foto de perfil: conserva la animación, con un máximo de 280 KB y 1024 × 1024 px. También se admiten JPEG, PNG y WebP. Toca el autor de un mensaje registrado o «Perfil» junto a un amigo para ver su foto, nombre visible y @usuario. Los perfiles públicos no incluyen correo ni datos de sesión.
+
+Activa las notificaciones desde Cuenta. La web muestra avisos de mensajes nuevos y solicitudes de amistad, con contadores por conversación; los avisos del sistema requieren permiso y mantener la página abierta. No avisa por mensajes propios, historial, ediciones ni mensajes de la sala que estás viendo. Android permite recibir avisos al minimizar la app mediante una conexión en segundo plano con una notificación permanente. Ambos clientes necesitan conexión con el servidor; no hay servicio de push para avisar después de forzar el cierre.
+
 ## Documentación y pruebas
 
 Consulta [GUIA_PROYECTO.txt](GUIA_PROYECTO.txt) para las funciones y rutas de la API. Ejecuta `npm test` para verificar la propiedad de mensajes, la privacidad de eventos y el puente local.

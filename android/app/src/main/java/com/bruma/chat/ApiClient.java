@@ -31,13 +31,25 @@ final class ApiClient {
     private static final String DEFAULT_URL = "https://brumo-production.up.railway.app";
     private final SharedPreferences preferences;
     private final OkHttpClient http;
+    private static OkHttpClient sharedHttp;
     private volatile HttpURLConnection eventConnection;
     private volatile int eventGeneration;
 
     ApiClient(Context context) {
-        http = new OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
-                .cache(new okhttp3.Cache(new java.io.File(context.getCacheDir(), "media-http"), 16L * 1024 * 1024))
-                .followRedirects(false).retryOnConnectionFailure(false).build();
+        synchronized (ApiClient.class) {
+            // One cache owner and connection pool even when Android recreates the Activity.
+            if (sharedHttp == null) {
+                java.io.File[] abandoned = context.getCacheDir().listFiles(file ->
+                        (file.getName().startsWith("bruma-image-") || file.getName().startsWith("bruma-decode-"))
+                                && System.currentTimeMillis() - file.lastModified() > 86_400_000L);
+                if (abandoned != null) for (java.io.File file : abandoned) file.delete();
+                sharedHttp = new OkHttpClient.Builder()
+                    .connectTimeout(10, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).writeTimeout(60, TimeUnit.SECONDS)
+                    .cache(new okhttp3.Cache(new java.io.File(context.getCacheDir(), "media-http"), 16L * 1024 * 1024))
+                    .followRedirects(false).retryOnConnectionFailure(false).build();
+            }
+            http = sharedHttp;
+        }
         preferences = context.getSharedPreferences("bruma_native", Context.MODE_PRIVATE);
     }
 
@@ -134,18 +146,23 @@ final class ApiClient {
 
     JSONObject upload(String path, String contentType, String name, String recipient, java.io.InputStream input, long length) throws Exception {
         if (input == null) throw new Exception("No se pudo abrir el archivo.");
-        if (length >= 0 && length <= 10_000_000) {
+        if (length > 0 && length <= 10_000_000) {
             try (java.io.InputStream stream = input) {
                 RequestBody payload = new RequestBody() {
                     @Override public MediaType contentType() { return MediaType.get(contentType); }
                     @Override public long contentLength() { return length; }
                     @Override public void writeTo(okio.BufferedSink sink) throws java.io.IOException {
-                        byte[] buffer = new byte[16384]; int count;
-                        while ((count = stream.read(buffer)) != -1) sink.write(buffer, 0, count);
+                        byte[] buffer = new byte[16384]; long remaining = length;
+                        while (remaining > 0) {
+                            int count = stream.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+                            if (count < 0) throw new java.io.IOException("El archivo cambió durante la subida.");
+                            sink.write(buffer, 0, count); remaining -= count;
+                        }
+                        if (stream.read() != -1) throw new java.io.IOException("El archivo cambió durante la subida.");
                     }
                 };
                 Request.Builder builder = new Request.Builder().url(baseUrl() + "/api/uploads").post(payload)
-                        .header("X-Bruma-File-Name", java.net.URLEncoder.encode(name, "UTF-8"));
+                        .header("X-Bruma-File-Name", android.net.Uri.encode(name));
                 if (recipient != null && !recipient.isEmpty()) builder.header("X-Bruma-Recipient", recipient);
                 String cookies = cookieHeader(); if (!cookies.isEmpty()) builder.header("Cookie", cookies);
                 try (Response response = http.newCall(builder.build()).execute()) {
@@ -156,11 +173,11 @@ final class ApiClient {
                 }
             }
         }
-        JSONObject startBody = new JSONObject().put("name", name).put("type", contentType).put("size", length);
-        if (recipient != null && !recipient.isEmpty()) startBody.put("recipientUsername", recipient);
-        JSONObject started = (JSONObject) request("POST", "/api/uploads/start", startBody);
-        String id = started.getString("id");
         try (java.io.InputStream stream = input) {
+            JSONObject startBody = new JSONObject().put("name", name).put("type", contentType).put("size", Math.max(0, length));
+            if (recipient != null && !recipient.isEmpty()) startBody.put("recipientUsername", recipient);
+            JSONObject started = (JSONObject) request("POST", "/api/uploads/start", startBody);
+            String id = started.getString("id");
             byte[] buffer = new byte[2 * 1024 * 1024];
             while (true) {
                 int used = 0;
@@ -170,15 +187,15 @@ final class ApiClient {
                     used += count;
                 }
                 if (used == 0) break;
-                uploadChunk(id, java.util.Arrays.copyOf(buffer, used));
+                uploadChunk(id, buffer, used);
                 if (used < buffer.length) break;
             }
+            return (JSONObject) request("POST", "/api/uploads/" + id + "/finish", null);
         }
-        return (JSONObject) request("POST", "/api/uploads/" + id + "/finish", null);
     }
 
-    private void uploadChunk(String id, byte[] bytes) throws Exception {
-        RequestBody payload = RequestBody.create(bytes, MediaType.get("application/octet-stream"));
+    private void uploadChunk(String id, byte[] bytes, int used) throws Exception {
+        RequestBody payload = RequestBody.create(bytes, MediaType.get("application/octet-stream"), 0, used);
         Request.Builder builder = new Request.Builder().url(baseUrl() + "/api/uploads/" + id + "/chunk").post(payload).header("Accept", "application/json");
         String cookies = cookieHeader();
         if (!cookies.isEmpty()) builder.header("Cookie", cookies);
@@ -206,6 +223,28 @@ final class ApiClient {
         }
     }
 
+    java.io.File mediaFile(String address, java.io.File directory, java.util.function.BooleanSupplier needed) throws Exception {
+        String target = address.startsWith("/api/") ? baseUrl() + address : address;
+        if (!target.startsWith("https://")) throw new Exception("Dirección multimedia inválida.");
+        Request.Builder builder = new Request.Builder().url(target).get();
+        if (address.startsWith("/api/uploads/")) builder.header("Cookie", cookieHeader());
+        java.io.File file = java.io.File.createTempFile("bruma-decode-", ".media", directory);
+        try (Response response = http.newCall(builder.build()).execute()) {
+            if (!response.isSuccessful() || response.body() == null || response.body().contentLength() > 10_000_000)
+                throw new java.io.IOException("Contenido no disponible.");
+            try (java.io.InputStream input = response.body().byteStream(); java.io.FileOutputStream output = new java.io.FileOutputStream(file)) {
+                byte[] buffer = new byte[16384]; int count; long received = 0;
+                while ((count = input.read(buffer)) != -1) {
+                    if (!needed.getAsBoolean()) throw new java.io.IOException("La vista ya no necesita la imagen.");
+                    received += count;
+                    if (received > 10_000_000) throw new java.io.IOException("Contenido demasiado grande.");
+                    output.write(buffer, 0, count);
+                }
+            }
+            return file;
+        } catch (Exception failure) { file.delete(); throw failure; }
+    }
+
     JSONObject requestGifs(String apiKey, String query) throws Exception {
         HttpUrl url = new HttpUrl.Builder()
                 .scheme("https")
@@ -214,6 +253,7 @@ final class ApiClient {
                 .addQueryParameter("api_key", apiKey)
                 .addQueryParameter("limit", "12")
                 .addQueryParameter("rating", "g")
+                .addQueryParameter("fields", "id,title,images.fixed_width.url,images.fixed_width.webp,images.fixed_width.size,images.fixed_width.webp_size,images.fixed_width_small_still.url,images.fixed_width_small.url")
                 .build();
         if (!query.isEmpty()) url = url.newBuilder().addQueryParameter("q", query).addQueryParameter("lang", "es").build();
         try (Response response = http.newCall(new Request.Builder().url(url).get().build()).execute()) {
